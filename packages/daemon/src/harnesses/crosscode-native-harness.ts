@@ -1,9 +1,10 @@
-import { spawn as nodeSpawn } from 'node:child_process';
+import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import {
   normalizeHarnessError,
+  type ActiveTaskState,
   type AgentMode,
   type HarnessId,
   type NormalizedAgentError,
@@ -233,6 +234,8 @@ interface NativeTool {
   description: string;
   inputSchema: Record<string, unknown>;
   modes: AgentMode[];
+  /** When true, tool_call_start events ask the orchestrator/UI for approval. */
+  requiresApproval?: boolean;
   executor: (args: Record<string, unknown>) => Promise<ToolExecutionResult>;
 }
 
@@ -252,18 +255,106 @@ function toPosix(relPath: string): string {
   return relPath.replace(/\\/g, '/');
 }
 
-/** Mini glob matcher supporting `**` (any depth), `*` (within segment), `?` (one char). */
+/**
+ * Mini glob matcher: the globstar (double star) matches zero or more whole
+ * path segments, so "src" + globstar + "*.ts" also matches "src/a.ts";
+ * a single star stays within one segment, "?" matches one non-separator
+ * character.
+ */
 export function globToRegExp(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-  const withGlobstar = escaped.replace(/\*\*/g, '\u0000');
-  const segmentStar = withGlobstar.replace(/\*/g, '[^/]*');
-  const finalSource = segmentStar.replace(/\u0000/g, '.*').replace(/\?/g, '[^/]');
-  return new RegExp(`^${finalSource}$`);
+  let source = escaped;
+  // Placeholder substitutions happen first so the inserted quantifiers are
+  // not mangled by the single-star replacement below.
+  // \u0000 expands to "(?:[\s\S]*/)?" (zero or more segments, each with its
+  // own trailing slash — the slash before the placeholder stays literal),
+  // \u0001 expands to "[\s\S]*".
+  source = source.replace(/\/\*\*\//g, '/\u0000');
+  source = source.replace(/^\*\*\//, '\u0000');
+  source = source.replace(/\/\*\*$/, '/\u0001');
+  source = source.replace(/\*\*/g, '\u0001');
+  source = source.replace(/\*/g, '[^/]*');
+  source = source.replace(/\?/g, '[^/]');
+  source = source.replace(/\u0000/g, '(?:[\\s\\S]*/)?');
+  source = source.replace(/\u0001/g, '[\\s\\S]*');
+  return new RegExp(`^${source}$`);
 }
 
 function truncateOutput(text: string): string {
   if (text.length <= MAX_TOOL_OUTPUT_CHARS) return text;
   return `${text.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n... (output truncated)`;
+}
+
+/**
+ * Minimal blacklist of well-known catastrophic shell commands for run_shell.
+ *
+ * SANDBOX LIMITATIONS (read before trusting this): run_shell is NOT a hard
+ * sandbox. Commands execute with the daemon's OS privileges in the project
+ * cwd; neither this blacklist nor the cwd prevents arbitrary commands from
+ * touching files outside the project root (e.g. via absolute paths or
+ * `cd`). The guard exists to reject obvious foot-guns, and run_shell
+ * `tool_call_start` events always carry `requiresApproval: true` so
+ * orchestrators/UIs can gate every shell execution behind explicit human
+ * approval. For hard isolation, run the daemon inside a container or OS
+ * sandbox instead of relying on this layer.
+ */
+const BLOCKED_SHELL_PATTERNS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
+  {
+    // rm -rf /, rm -fr /, rm --recursive --force /, rm -r -f ~, rm "/" ...
+    pattern: /\brm\b(?:\s+-{1,2}[\w-]+)*\s+["']?[/~]\s*(?:$|["'])/,
+    label: 'recursive force-removal of the filesystem root or home directory (rm -rf /)',
+  },
+  {
+    pattern: /\bformat\s+[a-z]:/i,
+    label: 'formatting a disk drive (format <drive>)',
+  },
+  {
+    pattern: /\bdel\b(?=[^&|]*\/s\b)(?=[^&|]*\/q\b)/i,
+    label: 'silent recursive deletion (del /s /q)',
+  },
+  {
+    pattern: /\brd(?:ir)?\b(?=[^&|]*\/s\b)(?=[^&|]*\/q\b)/i,
+    label: 'silent recursive directory removal (rd /s /q)',
+  },
+  {
+    pattern: /\bmkfs/i,
+    label: 'creating a new filesystem (mkfs)',
+  },
+  {
+    pattern: /\bdd\b[^&|]*\bof=\/dev\//i,
+    label: 'raw write to a device node (dd of=/dev/...)',
+  },
+  {
+    pattern: /\bremove-item\b(?=[^&|]*-recurse)(?=[^&|]*-force)/i,
+    label: 'PowerShell recursive force removal (Remove-Item -Recurse -Force)',
+  },
+];
+
+function matchBlockedShellCommand(command: string): string | null {
+  for (const entry of BLOCKED_SHELL_PATTERNS) {
+    if (entry.pattern.test(command)) return entry.label;
+  }
+  return null;
+}
+
+/**
+ * Kills a spawned process and, on Windows, its whole process tree.
+ * `child.kill()` only signals the direct child; when `shell: true` is used
+ * the real command often runs as a grandchild that would otherwise survive,
+ * so win32 falls back to `taskkill /T /F /PID`.
+ */
+function killProcessTree(child: ChildProcess): void {
+  if (process.platform === 'win32' && child.pid) {
+    nodeSpawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], {
+      windowsHide: true,
+    });
+    return;
+  }
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    // already dead
+  }
 }
 
 export interface CrossCodeNativeHarnessOptions {
@@ -423,7 +514,13 @@ export class CrossCodeNativeHarness {
         }
 
         for (const call of toolCalls) {
-          this.emitToolCallStart(call.id, call.name, asRecord(call.arguments) ?? {});
+          const knownTool = this.tools.get(call.name);
+          this.emitToolCallStart(
+            call.id,
+            call.name,
+            asRecord(call.arguments) ?? {},
+            knownTool?.requiresApproval === true,
+          );
           const result = await this.executeToolCall(call);
           this.emitToolCallResult(call.id, call.name, truncateOutput(result.output), result.isError);
           if (result.isError) {
@@ -444,12 +541,14 @@ export class CrossCodeNativeHarness {
       }
 
       // Step limit reached without a final answer: pause for a later resume.
+      // Do not fabricate placeholder steps here — an honest empty nextSteps
+      // list keeps the cross-harness relay context clean.
       this.emitTextDelta(`[crosscode-native] Step limit (${this.maxSteps}) reached; task paused.`);
       await updateActiveTask(this.projectPath, {
         status: 'in_progress',
         currentStep: 'Paused: step limit reached',
         completedSteps,
-        nextSteps: ['Resume the task to continue the remaining work'],
+        nextSteps: [],
       });
     } finally {
       this.running = false;
@@ -594,6 +693,7 @@ export class CrossCodeNativeHarness {
     callId: string,
     toolName: string,
     args: Record<string, unknown>,
+    requiresApproval = false,
   ): void {
     this.emitEvent({
       type: 'tool_call_start',
@@ -601,7 +701,7 @@ export class CrossCodeNativeHarness {
       callId,
       toolName,
       args,
-      requiresApproval: false,
+      requiresApproval,
     });
   }
 
@@ -710,7 +810,7 @@ export class CrossCodeNativeHarness {
       {
         name: 'run_shell',
         description:
-          'Run a shell command in the project root with a timeout. Returns exit code, stdout and stderr.',
+          'Run a shell command in the project root with a timeout. Returns exit code, stdout and stderr. Gated by the shell guard and always requires approval.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -720,6 +820,7 @@ export class CrossCodeNativeHarness {
           required: ['command'],
         },
         modes: writeModes,
+        requiresApproval: true,
         executor: (args) => this.execRunShell(args),
       },
       {
@@ -749,13 +850,46 @@ export class CrossCodeNativeHarness {
     return new Map(tools.map((tool) => [tool.name, tool]));
   }
 
-  private resolveWithinProject(relPath: string): string {
+  /**
+   * Resolves a user-supplied path against the project root and verifies it
+   * stays inside the project.
+   *
+   * Two layers of protection:
+   * 1. Textual clamp: `path.relative` must not escape the root.
+   * 2. Symlink/junction protection: resolve the deepest existing ancestor of
+   *    the target with `fs.realpath` and compare it against the real project
+   *    root, so in-project symlinks/junctions pointing outside are rejected.
+   *    Because `write_file` targets may not exist yet (realpath would throw),
+   *    the walk goes up to the deepest ancestor that does exist.
+   */
+  private async resolveWithinProject(relPath: string): Promise<string> {
     const absPath = path.resolve(this.projectPath, relPath);
     const rel = path.relative(this.projectPath, absPath);
     if (rel.length === 0 || rel.startsWith('..') || path.isAbsolute(rel)) {
       throw new Error(`Refusing to access a path outside the project root: ${relPath}`);
     }
-    return absPath;
+    const realRoot = await fs.realpath(this.projectPath).catch(() => null);
+    if (!realRoot) return absPath;
+    let probe = absPath;
+    for (;;) {
+      const realProbe = await fs.realpath(probe).catch(() => null);
+      if (realProbe) {
+        const realRel = path.relative(realRoot, realProbe);
+        if (realRel.startsWith('..') || path.isAbsolute(realRel)) {
+          throw new Error(
+            `Refusing to access '${toPosix(relPath)}': it resolves outside the project root through a symlink/junction`,
+          );
+        }
+        return absPath;
+      }
+      const parent = path.dirname(probe);
+      if (parent === probe) {
+        // Reached the filesystem root without finding anything that exists;
+        // fall back to the textual check above.
+        return absPath;
+      }
+      probe = parent;
+    }
   }
 
   private async collectProjectFiles(): Promise<string[]> {
@@ -784,7 +918,7 @@ export class CrossCodeNativeHarness {
 
   private async execReadFile(args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const relPath = requireStringArg(args, 'path');
-    const absPath = this.resolveWithinProject(relPath);
+    const absPath = await this.resolveWithinProject(relPath);
     const stat = await fs.stat(absPath).catch(() => null);
     if (!stat || !stat.isFile()) {
       return { output: `File not found: ${toPosix(relPath)}`, isError: true };
@@ -799,7 +933,7 @@ export class CrossCodeNativeHarness {
   private async execWriteFile(args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const relPath = requireStringArg(args, 'path');
     const content = typeof args.content === 'string' ? args.content : '';
-    const absPath = this.resolveWithinProject(relPath);
+    const absPath = await this.resolveWithinProject(relPath);
     await fs.mkdir(path.dirname(absPath), { recursive: true });
     await fs.writeFile(absPath, content, 'utf8');
     return {
@@ -813,7 +947,7 @@ export class CrossCodeNativeHarness {
     const oldString = requireStringArg(args, 'oldString');
     const newString = requireStringArg(args, 'newString');
     const replaceAll = args.replaceAll === true;
-    const absPath = this.resolveWithinProject(relPath);
+    const absPath = await this.resolveWithinProject(relPath);
     const content = await fs.readFile(absPath, 'utf8');
     const occurrences = content.split(oldString).length - 1;
     if (occurrences === 0) {
@@ -893,11 +1027,7 @@ export class CrossCodeNativeHarness {
       });
       const timer = setTimeout(() => {
         timedOut = true;
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // already dead
-        }
+        killProcessTree(child);
       }, timeoutMs);
       child.stdout?.on('data', (chunk: unknown) => {
         if (stdout.length < 64 * 1024) stdout += typeof chunk === 'string' ? chunk : String(chunk);
@@ -927,6 +1057,16 @@ export class CrossCodeNativeHarness {
 
   private async execRunShell(args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const command = requireStringArg(args, 'command');
+    // Minimal catastrophic-command guard (see BLOCKED_SHELL_PATTERNS for the
+    // documented sandbox limitations). requiresApproval is always true for
+    // run_shell tool_call_start events.
+    const blockedLabel = matchBlockedShellCommand(command);
+    if (blockedLabel) {
+      return {
+        output: `Blocked by the CrossCode shell guard (${blockedLabel}). The command was NOT executed: ${command}`,
+        isError: true,
+      };
+    }
     const requested = Number(args.timeoutMs ?? 30_000);
     const timeoutMs = Number.isFinite(requested)
       ? Math.min(Math.max(requested, 1_000), 120_000)
@@ -956,6 +1096,27 @@ export class CrossCodeNativeHarness {
       output: `--- git status ---\n${status.stdout.trim() || '(working tree clean)'}\n--- diff stat ---\n${diffStat.stdout.trim() || '(no unstaged diffs)'}`,
       isError: false,
     };
+  }
+
+  private async readActiveTaskSnapshot(): Promise<ActiveTaskState | null> {
+    const taskPath = path.join(this.projectPath, '.agent', 'context', 'active-task.json');
+    try {
+      const raw = await fs.readFile(taskPath, 'utf8');
+      const parsed = JSON.parse(raw) as ActiveTaskState;
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async restoreActiveTaskSnapshot(snapshot: ActiveTaskState): Promise<void> {
+    const taskPath = path.join(this.projectPath, '.agent', 'context', 'active-task.json');
+    try {
+      const restored: ActiveTaskState = { ...snapshot, updatedAt: new Date().toISOString() };
+      await fs.writeFile(taskPath, `${JSON.stringify(restored, null, 2)}\n`, 'utf8');
+    } catch {
+      // best-effort: keep dispatch results even if the restore fails
+    }
   }
 
   /**
@@ -988,14 +1149,21 @@ export class CrossCodeNativeHarness {
       this.emitEvent(event);
       if (event.type === 'text_delta') collectedText.push(event.text);
     });
+    // Snapshot the orchestrating task's state before dispatch: the external
+    // adapter updates the shared .agent/context/active-task.json (and marks
+    // it completed on success), which must not leak into / clobber the outer
+    // task. The snapshot is restored once the dispatch settles.
+    const snapshot = await this.readActiveTaskSnapshot();
     try {
+      // adapter.start() resolves once the external process has fully exited,
+      // so no extra waitForExit() is needed here.
       await adapter.start(task);
-      await adapter.waitForExit();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return { output: `Dispatch to ${harnessId} failed: ${message}`, isError: true };
     } finally {
       unsubscribe();
+      if (snapshot) await this.restoreActiveTaskSnapshot(snapshot);
     }
 
     const summary = collectedText.join('').trim();

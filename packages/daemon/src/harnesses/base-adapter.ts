@@ -35,10 +35,23 @@ export type SpawnFunction = (
   options?: { cwd?: string },
 ) => HarnessChildProcess;
 
+/**
+ * Default spawn implementation.
+ *
+ * On Windows, harness CLIs (claude / opencode / codex / ...) are typically
+ * installed as `.cmd`/`.bat` shims, and since the CVE-2024-27980 fix Node
+ * refuses to spawn `.cmd`/`.bat` files unless an explicit shell is enabled.
+ * Therefore the default function sets `shell: true` on win32. Caveat: in
+ * shell mode cmd.exe joins the command line without automatic quoting, so
+ * callers that need strict quoting/escaping of prompt text should inject
+ * their own SpawnFunction (the injected interface is unchanged).
+ */
 export const defaultSpawnFunction: SpawnFunction = (command, args, options) => {
+  const useShell = process.platform === 'win32';
   return nodeSpawn(command, args, {
     cwd: options?.cwd,
     windowsHide: true,
+    shell: useShell,
   }) as unknown as HarnessChildProcess;
 };
 
@@ -61,7 +74,10 @@ export interface ExternalCliOptions {
 const ANSI_ESCAPE_PATTERN = /\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007]*\u0007|\u001B[@-Z\\-_]/g;
 const CONTROL_CHARS_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 const TIMESTAMP_PREFIX_PATTERN = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?\s+/;
-const CLI_NOISE_LINE_PATTERN = /^(?:INFO|DEBUG|TRACE|VERBOSE|WARN|WARNING|ERROR)\b[\s:]/;
+// Log-level chatter that carries no agent content. WARN/ERROR lines are
+// intentionally NOT dropped: they are user-facing signals and are forwarded
+// as text_delta content instead of being silently discarded.
+const CLI_NOISE_LINE_PATTERN = /^(?:INFO|DEBUG|TRACE|VERBOSE)\b[\s:]/;
 const SPINNER_LINE_PATTERN = /^[\u2800-\u28FF]/;
 
 export function stripAnsi(text: string): string {
@@ -70,7 +86,8 @@ export function stripAnsi(text: string): string {
 
 /**
  * Cleans one interactive CLI output line: strips ANSI escape sequences and
- * control characters, drops log-level / spinner noise and empty lines.
+ * control characters, drops low-value log-level chatter (INFO/DEBUG/...),
+ * spinner frames and empty lines. WARN/ERROR lines are kept as content.
  * Returns null when the line carries no user-facing content.
  */
 export function cleanCliNoiseLine(rawLine: string): string | null {
@@ -232,19 +249,29 @@ export abstract class BaseHarnessAdapter {
     this.sessionIdValue = randomUUID();
     this.onSessionStart();
 
-    await ensureAgentWorkspace(this.projectPath, { activeHarness: this.harnessId });
-    this.workspaceContext = await readAgentWorkspaceContext(this.projectPath);
-    const finalPrompt = this.buildRelayPrompt(prompt);
-    await this.markTaskStarted(prompt);
-
-    const proc = this.spawnFn(this.getCommand(), this.buildCliArgs(finalPrompt), {
-      cwd: this.projectPath,
-    });
-    this.currentProc = proc;
-
     this.exitPromise = new Promise<void>((resolve) => {
       this.resolveExit = resolve;
     });
+
+    let proc: HarnessChildProcess;
+    try {
+      await ensureAgentWorkspace(this.projectPath, { activeHarness: this.harnessId });
+      this.workspaceContext = await readAgentWorkspaceContext(this.projectPath);
+      const finalPrompt = this.buildRelayPrompt(prompt);
+      await this.markTaskStarted(prompt);
+
+      proc = this.spawnFn(this.getCommand(), this.buildCliArgs(finalPrompt), {
+        cwd: this.projectPath,
+      });
+    } catch (err) {
+      // Startup failures (workspace prep errors, synchronous spawn errors)
+      // must not leave the adapter stuck in a running state: reset the
+      // session flags and route the failure through the standard
+      // error-normalization path instead of throwing past the caller.
+      await this.handleStartupFailure(err);
+      return;
+    }
+    this.currentProc = proc;
 
     proc.stdout?.on('data', (chunk: unknown) => this.ingestStdout(chunk));
     proc.stderr?.on('data', (chunk: unknown) => {
@@ -466,6 +493,23 @@ export abstract class BaseHarnessAdapter {
 
     this.currentProc = null;
     this.running = false;
+    this.resolveExit?.();
+    this.resolveExit = null;
+  }
+
+  /**
+   * Shared failure path for startup errors: emits a normalized_error event,
+   * persists it to the `.agent` workspace, and resets session state so the
+   * adapter can start a new session afterwards.
+   */
+  private async handleStartupFailure(err: unknown): Promise<void> {
+    const message = err instanceof Error ? err.message : String(err);
+    const error = normalizeHarnessError(this.harnessId, message, this.providerId);
+    this.emitNormalizedError(error);
+    await this.persistError(error);
+    this.currentProc = null;
+    this.running = false;
+    this.finished = true;
     this.resolveExit?.();
     this.resolveExit = null;
   }

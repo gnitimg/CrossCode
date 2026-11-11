@@ -14,6 +14,7 @@ import {
   QoderAdapter,
   ZCodeAdapter,
   ensureAgentWorkspace,
+  globToRegExp,
   readAgentWorkspaceContext,
   updateActiveTask,
   type FetchLike,
@@ -380,6 +381,8 @@ describe('Task 6: Harness Adapters & CrossCodeNativeHarness', () => {
           '\u25B8 Scanning project',
           '\u2714 Connected to provider',
           'engine started',
+          'WARN: deprecated flag used',
+          'ERROR: provider timeout',
           'Here is the final answer: 42',
         ]);
         for (const event of textEvents) expect(event.harness).toBe(entry.id);
@@ -563,6 +566,81 @@ describe('Task 6: Harness Adapters & CrossCodeNativeHarness', () => {
       expect(await fs.readFile(path.join(project, 'notes.txt'), 'utf8')).toBe('alpha delta gamma');
     });
 
+    it('flags run_shell for approval and blocks catastrophic commands', async () => {
+      const project = path.join(tempRoot, 'native-shell-guard');
+      await fs.mkdir(project, { recursive: true });
+
+      const { client } = scriptedLLM([
+        { toolCalls: [{ id: 's1', name: 'run_shell', arguments: { command: 'rm -rf /' } }] },
+        { toolCalls: [{ id: 's2', name: 'run_shell', arguments: { command: 'format C:' } }] },
+        { toolCalls: [{ id: 's3', name: 'run_shell', arguments: { command: 'del /s /q C:\\Windows\\Temp' } }] },
+        { toolCalls: [{ id: 's4', name: 'run_shell', arguments: { command: 'echo crosscode-safe' } }] },
+        { text: 'Shell guard check done.' },
+      ]);
+
+      const harness = new CrossCodeNativeHarness({
+        projectPath: project,
+        mode: 'build',
+        llmClient: client,
+      });
+      const events = collectEvents(harness);
+      await harness.start('Run shell commands');
+
+      const starts = eventsOfType(events, 'tool_call_start');
+      expect(starts).toHaveLength(4);
+      for (const start of starts) {
+        expect(start.toolName).toBe('run_shell');
+        expect(start.requiresApproval).toBe(true);
+      }
+
+      const results = eventsOfType(events, 'tool_call_result');
+      expect(results[0].isError).toBe(true);
+      expect(results[0].output).toContain('shell guard');
+      expect(results[1].isError).toBe(true);
+      expect(results[1].output).toContain('shell guard');
+      expect(results[2].isError).toBe(true);
+      expect(results[2].output).toContain('shell guard');
+      expect(results[3].isError).toBe(false);
+      expect(results[3].output).toContain('crosscode-safe');
+    });
+
+    it('refuses file tools that escape the project root through a symlink/junction', async () => {
+      const project = path.join(tempRoot, 'native-symlink');
+      await fs.mkdir(path.join(project, 'real'), { recursive: true });
+      const outside = path.join(tempRoot, 'outside-secret');
+      await fs.mkdir(outside, { recursive: true });
+      await fs.writeFile(path.join(outside, 'secret.txt'), 'top secret', 'utf8');
+
+      const linkPath = path.join(project, 'real', 'escape');
+      try {
+        // 'junction' works on Windows without elevated privileges; on POSIX
+        // the type argument is ignored and a regular symlink is created.
+        await fs.symlink(outside, linkPath, 'junction');
+      } catch {
+        // Environment without symlink support: skip this scenario.
+        return;
+      }
+
+      const { client } = scriptedLLM([
+        {
+          toolCalls: [{ id: 'lk1', name: 'read_file', arguments: { path: 'real/escape/secret.txt' } }],
+        },
+        { text: 'done' },
+      ]);
+      const harness = new CrossCodeNativeHarness({
+        projectPath: project,
+        mode: 'build',
+        llmClient: client,
+      });
+      const events = collectEvents(harness);
+      await harness.start('Try to read through a symlink');
+
+      const results = eventsOfType(events, 'tool_call_result');
+      expect(results[0].isError).toBe(true);
+      expect(results[0].output).toContain('symlink');
+      expect(results[0].output).not.toContain('top secret');
+    });
+
     it('orchestrate mode forwards dispatch_to_external_harness events from the external adapter', async () => {
       const project = path.join(tempRoot, 'native-orchestrate');
       await fs.mkdir(project, { recursive: true });
@@ -613,6 +691,56 @@ describe('Task 6: Harness Adapters & CrossCodeNativeHarness', () => {
         (e) => e.harness === 'crosscode-native' && e.text === 'orchestration finished',
       );
       expect(finalText).toBeDefined();
+
+      // The dispatch snapshot/restore keeps the orchestrating task intact:
+      // the external adapter's own task-state writes must not leak in.
+      const context = await readAgentWorkspaceContext(project);
+      expect(context.activeTask.currentHarness).toBe('crosscode-native');
+      expect(context.activeTask.status).toBe('completed');
+      expect(context.activeTask.completedSteps).toContain('Ran dispatch_to_external_harness');
+    });
+  });
+
+  describe('adapter session robustness', () => {
+    it('recovers from a synchronous spawn failure without leaking session state', async () => {
+      const project = path.join(tempRoot, 'spawn-fail');
+      await fs.mkdir(project, { recursive: true });
+
+      const adapter = new OpenCodeAdapter({
+        projectPath: project,
+        spawn: () => {
+          throw new Error('boom: spawn not available');
+        },
+      });
+      const events = collectEvents(adapter);
+
+      await expect(adapter.start('first attempt')).resolves.toBeUndefined();
+      const errors = eventsOfType(events, 'normalized_error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0].error.code).toBe('CC-PROC-5001');
+      expect(adapter.isRunning()).toBe(false);
+
+      // The failed startup reset the session flags, so a second start is
+      // accepted (it fails the same way instead of throwing 'already running').
+      await expect(adapter.start('second attempt')).resolves.toBeUndefined();
+      expect(eventsOfType(events, 'normalized_error')).toHaveLength(2);
+      expect(adapter.isRunning()).toBe(false);
+    });
+  });
+
+  describe('globToRegExp', () => {
+    it('supports zero-segment globstar and segment-local wildcards', () => {
+      expect(globToRegExp('src/**/*.ts').test('src/a.ts')).toBe(true);
+      expect(globToRegExp('src/**/*.ts').test('src/sub/b.ts')).toBe(true);
+      expect(globToRegExp('src/**/*.ts').test('src/sub/deep/c.ts')).toBe(true);
+      expect(globToRegExp('src/**/*.ts').test('docs/readme.md')).toBe(false);
+      expect(globToRegExp('**/*.ts').test('a.ts')).toBe(true);
+      expect(globToRegExp('**/*.ts').test('x/y/a.ts')).toBe(true);
+      expect(globToRegExp('src/*.ts').test('src/a.ts')).toBe(true);
+      expect(globToRegExp('src/*.ts').test('src/sub/b.ts')).toBe(false);
+      expect(globToRegExp('src/**').test('src/sub/b.ts')).toBe(true);
+      expect(globToRegExp('?.md').test('a.md')).toBe(true);
+      expect(globToRegExp('?.md').test('ab.md')).toBe(false);
     });
   });
 
@@ -808,5 +936,7 @@ const NOISY_LINES = [
   '\u001B[32m\u2714 Connected to provider\u001B[0m',
   '\u280B Loading model weights',
   '2026-11-12 10:00:00 engine started',
+  'WARN: deprecated flag used',
+  'ERROR: provider timeout',
   'Here is the final answer: 42',
 ];
