@@ -107,10 +107,14 @@ async function projectIdFor(gateway: GatewayHandle, token: string, projectDir: s
 }
 
 class FakeSession implements GatewaySession {
-  readonly sessionId = 'sess-fake';
+  sessionId: string;
   private readonly bus = new HarnessEventBus();
   readonly actions: SessionClientAction[] = [];
   readonly approvals: Array<{ approvalId: string; approved: boolean }> = [];
+
+  constructor(sessionId = 'sess-fake') {
+    this.sessionId = sessionId;
+  }
 
   emit(event: UnifiedStreamEvent): void {
     this.bus.emit(event);
@@ -140,25 +144,43 @@ class SpyingRegistry extends InMemoryPendingApprovalRegistry {
 
 interface StartedGateway {
   gateway: GatewayHandle;
-  session: FakeSession;
+  /** Sessions created by the (default shared) session factory, in order. */
+  sessions: FakeSession[];
   registry: SpyingRegistry;
   wsUrl: string;
 }
 
-async function startGatewayWithSession(): Promise<StartedGateway> {
-  const session = new FakeSession();
+interface StartGatewayOptions {
+  /** Custom session factory (one call per ws connection). */
+  sessionFactory?: () => FakeSession | null;
+  /** When set, /projects scanning is confined to this temp root. */
+  scanRoot?: string;
+}
+
+async function startGateway(opts: StartGatewayOptions = {}): Promise<StartedGateway> {
+  const sessions: FakeSession[] = [];
+  if (!opts.sessionFactory) {
+    // Shared session: created eagerly so tests can grab sessions[0] before
+    // the first ws connection attaches to it.
+    sessions.push(new FakeSession());
+  }
+  const defaultFactory = (): FakeSession => sessions[0];
+  const factory = opts.sessionFactory ?? defaultFactory;
   const registry = new SpyingRegistry();
   const gateway = createGateway({
     jwtSecret: 'ws-test-secret',
     pin: '123456',
-    sessionManager: { getSession: async () => session },
+    sessionManager: { getSession: async () => factory() },
     pendingApprovals: registry,
+    ...(opts.scanRoot
+      ? { scanOptions: { workspaceRoots: [opts.scanRoot], appConfigDirs: {}, maxWorkspaceDepth: 1 } }
+      : { scanProjects: async () => [] }),
   });
   await gateway.app.listen({ port: 0, host: '127.0.0.1' });
   const address = gateway.app.server.address();
   const port = typeof address === 'object' && address !== null ? address.port : 0;
   if (!port) throw new Error('gateway did not bind to an ephemeral port');
-  return { gateway, session, registry, wsUrl: `ws://127.0.0.1:${port}/ws/session` };
+  return { gateway, sessions, registry, wsUrl: `ws://127.0.0.1:${port}/ws/session` };
 }
 
 class WsFrameCollector {
@@ -293,6 +315,45 @@ describe('gateway pairing and auth', () => {
     const newPin = await pair(gateway, '654321');
     expect(newPin.statusCode).toBe(200);
     expect(newPin.token).not.toBeNull();
+  });
+
+  it('locks /pair after consecutive failures and recovers when the lockout expires', async () => {
+    const root = await trackRoot();
+    let nowMs = 1_700_000_000_000;
+    const gateway = trackGateway(
+      makeGatewayForRoot(root, {
+        pairRateLimit: { maxFailures: 2, lockoutSeconds: 60, now: () => nowMs },
+      }),
+    );
+
+    // Two consecutive failures exhaust the budget (403 each).
+    expect((await pair(gateway, '000001')).statusCode).toBe(403);
+    expect((await pair(gateway, '000002')).statusCode).toBe(403);
+
+    // Even the correct PIN is rejected with 429 while locked.
+    const locked = await pair(gateway, '123456');
+    expect(locked.statusCode).toBe(429);
+    expect((locked.json as { retryAfterSeconds: number }).retryAfterSeconds).toBeGreaterThan(0);
+
+    // Still locked within the window.
+    nowMs += 30_000;
+    expect((await pair(gateway, '123456')).statusCode).toBe(429);
+
+    // After the lockout expires the correct PIN pairs again.
+    nowMs += 61_000;
+    const recovered = await pair(gateway, '123456');
+    expect(recovered.statusCode).toBe(200);
+    expect(recovered.token).not.toBeNull();
+
+    // A success clears the counters (no lockout after isolated failures).
+    expect((await pair(gateway, '000003')).statusCode).toBe(403);
+    expect((await pair(gateway, '123456')).statusCode).toBe(200);
+  });
+
+  it('rejects a non-6-digit pin passed via createGateway options', () => {
+    expect(() => createGateway({ jwtSecret: 's', pin: '12ab' })).toThrow(/6 digits/);
+    expect(() => createGateway({ jwtSecret: 's', pin: '12345' })).toThrow(/6 digits/);
+    expect(() => createGateway({ jwtSecret: 's', pin: '123456' })).not.toThrow();
   });
 });
 
@@ -529,6 +590,46 @@ describe('git diff routes', () => {
     expect(lines).toContain('M  a.txt'); // staged modification
     expect(lines).toContain('A  new.txt'); // staged addition
   });
+
+  it('reports non-ASCII filenames raw (core.quotepath=off) and discards/accepts them correctly', async () => {
+    const root = await trackRoot();
+    const projectDir = await makeGitProject(root, 'cjk-proj');
+    await fs.writeFile(path.join(projectDir, '中文文档.txt'), 'v1\n', 'utf8');
+    await execFileAsync('git', ['add', '.'], { cwd: projectDir });
+    await execFileAsync('git', ['commit', '-m', 'add cjk file'], { cwd: projectDir });
+    await fs.writeFile(path.join(projectDir, '中文文档.txt'), 'v2\n', 'utf8');
+
+    const gateway = trackGateway(makeGatewayForRoot(root));
+    const { token } = await pair(gateway, '123456');
+    const id = await projectIdFor(gateway, token!, projectDir);
+
+    // The change list carries the raw UTF-8 filename, not an octal escape.
+    const listed = await authorizedJson(gateway, 'GET', `/projects/${id}/diff`, token!);
+    expect(listed.statusCode).toBe(200);
+    const changes = (listed.json as { changes: Array<{ status: string; file: string }> }).changes;
+    const cjk = changes.find((c) => c.file === '中文文档.txt');
+    expect(cjk?.status).toBe(' M');
+
+    // Discard restores the committed content via the non-ASCII pathspec.
+    const discarded = await authorizedJson(gateway, 'POST', `/projects/${id}/diff/discard`, token!, {
+      files: ['中文文档.txt'],
+    });
+    expect(discarded.statusCode).toBe(200);
+    expect((await fs.readFile(path.join(projectDir, '中文文档.txt'), 'utf8')).trim()).toBe('v1');
+
+    // Accept stages the change again via the non-ASCII pathspec.
+    await fs.writeFile(path.join(projectDir, '中文文档.txt'), 'v2\n', 'utf8');
+    const accepted = await authorizedJson(gateway, 'POST', `/projects/${id}/diff/accept`, token!, {
+      files: ['中文文档.txt'],
+    });
+    expect(accepted.statusCode).toBe(200);
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-c', 'core.quotepath=off', 'status', '--porcelain'],
+      { cwd: projectDir },
+    );
+    expect(stdout.split(/\r?\n/)).toContain('M  中文文档.txt');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -575,7 +676,7 @@ describe('skills toggles', () => {
 
 describe('websocket /ws/session', () => {
   it('requires authentication and closes sockets that skip it', async () => {
-    const { gateway, wsUrl } = await startGatewayWithSession();
+    const { gateway, wsUrl } = await startGateway();
     trackGateway(gateway);
 
     const ws = new WebSocket(wsUrl);
@@ -590,7 +691,7 @@ describe('websocket /ws/session', () => {
   });
 
   it('closes connections carrying an invalid query token', async () => {
-    const { gateway, wsUrl } = await startGatewayWithSession();
+    const { gateway, wsUrl } = await startGateway();
     trackGateway(gateway);
 
     const ws = new WebSocket(`${wsUrl}?token=garbage.token.here`);
@@ -599,7 +700,8 @@ describe('websocket /ws/session', () => {
   });
 
   it('authenticates via first message, forwards session events and completes the approval flow', async () => {
-    const { gateway, session, registry, wsUrl } = await startGatewayWithSession();
+    const { gateway, sessions, registry, wsUrl } = await startGateway();
+    const session = sessions[0];
     trackGateway(gateway);
 
     const { token } = await pair(gateway, '123456');
@@ -657,7 +759,8 @@ describe('websocket /ws/session', () => {
   it('authenticates via query token, forwards screen frames and persists provider switches', async () => {
     const root = await trackRoot();
     const projectDir = await makeProject(root, 'ws-provider-proj');
-    const { gateway, session, wsUrl } = await startGatewayWithSession();
+    const { gateway, sessions, wsUrl } = await startGateway({ scanRoot: root });
+    const session = sessions[0];
     trackGateway(gateway);
 
     const { token } = await pair(gateway, '123456');
@@ -706,5 +809,145 @@ describe('websocket /ws/session', () => {
     ws.send(JSON.stringify({ type: 'reject', approvalId: card.approvalId }));
     await collector.waitFor((f) => f.type === 'approval_resolved');
     expect(session.approvals).toContainEqual({ approvalId: card.approvalId, approved: false });
+  });
+
+  it('refuses switch_provider for a projectPath that is not a scanned project', async () => {
+    const root = await trackRoot();
+    // projectDir exists on disk but is NOT inside any scanned workspace root.
+    const projectDir = await makeProject(root, 'unscanned-proj');
+    const { gateway, wsUrl } = await startGateway();
+    trackGateway(gateway);
+
+    const { token } = await pair(gateway, '123456');
+    const ws = new WebSocket(
+      `${wsUrl}?token=${encodeURIComponent(token!)}&projectPath=${encodeURIComponent(projectDir)}`,
+    );
+    const collector = new WsFrameCollector(ws);
+    await waitOpen(ws);
+    await collector.waitFor((f) => f.type === 'session_attached');
+
+    ws.send(JSON.stringify({ type: 'switch_provider', providerId: 'openai' }));
+    const error = (await collector.waitFor((f) => f.type === 'error')) as { message: string };
+    expect(error.message).toContain('not a scanned project');
+
+    // Nothing was persisted on disk.
+    await expect(
+      fs.access(path.join(projectDir, '.agent', 'runtime', 'provider-state.json')),
+    ).rejects.toThrow();
+  });
+
+  it('answers switch_provider with an error frame when neither projectPath nor session exists', async () => {
+    const { gateway, wsUrl } = await startGateway({
+      sessionFactory: () => null, // every connection stays session-less
+    });
+    trackGateway(gateway);
+
+    const { token } = await pair(gateway, '123456');
+    const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(token!)}`);
+    const collector = new WsFrameCollector(ws);
+    await waitOpen(ws);
+
+    // attachSession reports the missing session but keeps the socket open.
+    const noSession = (await collector.waitFor((f) => f.type === 'error')) as { message: string };
+    expect(noSession.message).toContain('no session available');
+
+    ws.send(JSON.stringify({ type: 'switch_provider', providerId: 'openai' }));
+    const error = (await collector.waitFor((f) => f.type === 'error' && f !== noSession)) as {
+      message: string;
+    };
+    expect(error.message).toContain('switch_provider requires');
+
+    // approve/reject are equally refused without a session.
+    ws.send(JSON.stringify({ type: 'approve', approvalId: 'apr_missing' }));
+    const approveError = (await collector.waitFor((f) => f.type === 'error' && f !== noSession && f !== error)) as {
+      message: string;
+    };
+    expect(approveError.message).toContain('no session attached');
+  });
+
+  it('refuses approve/reject for approvals belonging to another session', async () => {
+    let counter = 0;
+    const { gateway, sessions, wsUrl } = await startGateway({
+      sessionFactory: () => {
+        counter += 1;
+        const session = new FakeSession(`sess-${counter}`);
+        sessions.push(session);
+        return session;
+      },
+    });
+    trackGateway(gateway);
+
+    const { token } = await pair(gateway, '123456');
+    const socketA = new WebSocket(`${wsUrl}?token=${encodeURIComponent(token!)}`);
+    const collectorA = new WsFrameCollector(socketA);
+    await waitOpen(socketA);
+    await collectorA.waitFor((f) => f.type === 'session_attached');
+
+    const socketB = new WebSocket(`${wsUrl}?token=${encodeURIComponent(token!)}`);
+    const collectorB = new WsFrameCollector(socketB);
+    await waitOpen(socketB);
+    await collectorB.waitFor((f) => f.type === 'session_attached');
+
+    // Session A (connection A) raises an approval.
+    const sessionA = sessions[0];
+    const sessionB = sessions[1];
+    sessionA.emit({
+      type: 'tool_call_start',
+      sessionId: sessionA.sessionId,
+      callId: 'call-a',
+      toolName: 'edit_file',
+      args: {},
+      requiresApproval: true,
+    });
+    const card = (await collectorA.waitFor((f) => f.type === 'approval_request')) as {
+      approvalId: string;
+      sessionId: string;
+    };
+    expect(card.sessionId).toBe(sessionA.sessionId);
+
+    // Connection B (session B) tries to approve A's approval → refused.
+    socketB.send(JSON.stringify({ type: 'approve', approvalId: card.approvalId }));
+    const error = (await collectorB.waitFor((f) => f.type === 'error')) as { message: string };
+    expect(error.message).toContain('does not belong to session');
+    expect(sessionA.approvals).toEqual([]);
+    expect(sessionB.approvals).toEqual([]);
+
+    // Connection A can still approve its own approval.
+    socketA.send(JSON.stringify({ type: 'approve', approvalId: card.approvalId }));
+    await collectorA.waitFor((f) => f.type === 'approval_resolved');
+    expect(sessionA.approvals).toEqual([{ approvalId: card.approvalId, approved: true }]);
+  });
+
+  it('reports an error frame instead of crashing when the session approval callback throws', async () => {
+    const { gateway, sessions, wsUrl } = await startGateway();
+    trackGateway(gateway);
+    const session = sessions[0];
+    session.handleApproval = () => {
+      throw new Error('approval callback exploded');
+    };
+
+    const { token } = await pair(gateway, '123456');
+    const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(token!)}`);
+    const collector = new WsFrameCollector(ws);
+    await waitOpen(ws);
+    await collector.waitFor((f) => f.type === 'session_attached');
+
+    session.emit({
+      type: 'tool_call_start',
+      sessionId: session.sessionId,
+      callId: 'call-boom',
+      toolName: 'edit_file',
+      args: {},
+      requiresApproval: true,
+    });
+    const card = (await collector.waitFor((f) => f.type === 'approval_request')) as {
+      approvalId: string;
+    };
+    ws.send(JSON.stringify({ type: 'approve', approvalId: card.approvalId }));
+
+    // The failure surfaces as an error frame (no unhandled rejection).
+    const error = (await collector.waitFor((f) => f.type === 'error')) as { message: string };
+    expect(error.message).toContain('approval callback exploded');
+    ws.close();
   });
 });

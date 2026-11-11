@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -59,6 +59,8 @@ export interface PendingApprovalRecord {
 export interface PendingApprovalRegistry {
   /** Registers a pending approval; `onResolution` fires exactly once. */
   register(record: PendingApprovalRecord, onResolution: (approved: boolean) => void): void;
+  /** Returns the pending record for an approval id (used for ownership checks). */
+  get(approvalId: string): PendingApprovalRecord | undefined;
   /** Resolves a pending approval; returns false when the id is unknown. */
   resolve(approvalId: string, approved: boolean): boolean;
   isPending(approvalId: string): boolean;
@@ -73,6 +75,10 @@ export class InMemoryPendingApprovalRegistry implements PendingApprovalRegistry 
 
   register(record: PendingApprovalRecord, onResolution: (approved: boolean) => void): void {
     this.pending.set(record.approvalId, { record, onResolution });
+  }
+
+  get(approvalId: string): PendingApprovalRecord | undefined {
+    return this.pending.get(approvalId)?.record;
   }
 
   resolve(approvalId: string, approved: boolean): boolean {
@@ -151,6 +157,15 @@ export type GatewayUpstreamFrame =
 // Gateway options & handle
 // ---------------------------------------------------------------------------
 
+export interface PairRateLimitOptions {
+  /** Consecutive failed /pair attempts before lockout (default 5). */
+  maxFailures?: number;
+  /** Lockout duration in seconds once the failure budget is exhausted (default 60). */
+  lockoutSeconds?: number;
+  /** Injectable monotonic-ish clock (epoch ms) for deterministic tests. */
+  now?: () => number;
+}
+
 export interface GatewayOptions {
   /** HS256 secret used to sign and verify pairing JWTs. */
   jwtSecret: string;
@@ -174,6 +189,8 @@ export interface GatewayOptions {
   sessionManager?: SessionManager;
   /** Pending approval registry (in-memory default). */
   pendingApprovals?: PendingApprovalRegistry;
+  /** Pairing brute-force protection (consecutive failure lockout). */
+  pairRateLimit?: PairRateLimitOptions;
 }
 
 export interface GatewayHandle {
@@ -270,8 +287,11 @@ async function collectDiff(projectPath: string): Promise<GitDiffSummary> {
     return { isGitRepo: false, changes: [], diff: '' };
   }
   const branchRes = await runGit(projectPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
-  const statusRes = await runGit(projectPath, ['status', '--porcelain']);
-  const diffRes = await runGit(projectPath, ['--no-pager', 'diff']);
+  // core.quotepath=off keeps non-ASCII filenames (e.g. CJK) as raw UTF-8 in
+  // porcelain output instead of octal escapes, so the reported paths match
+  // the pathspecs used by discard (git checkout --) and accept (git add).
+  const statusRes = await runGit(projectPath, ['-c', 'core.quotepath=off', 'status', '--porcelain']);
+  const diffRes = await runGit(projectPath, ['-c', 'core.quotepath=off', '--no-pager', 'diff']);
   return {
     isGitRepo: true,
     ...(branchRes.ok ? { branch: branchRes.stdout.trim() } : {}),
@@ -300,9 +320,22 @@ function isSafeRelativeFile(projectPath: string, file: unknown): file is string 
 // Gateway factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Constant-time PIN comparison. Length mismatch fails immediately (length is
+ * not secret — the PIN is always 6 digits); equal-length inputs are compared
+ * with crypto.timingSafeEqual to avoid leaking prefix-match timing.
+ */
+function pinsMatch(candidate: string, expected: string): boolean {
+  if (candidate.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(candidate, 'utf8'), Buffer.from(expected, 'utf8'));
+}
+
 export function createGateway(options: GatewayOptions): GatewayHandle {
   if (!options.jwtSecret || typeof options.jwtSecret !== 'string') {
     throw new Error('createGateway requires a jwtSecret');
+  }
+  if (options.pin !== undefined && !/^\d{6}$/.test(options.pin)) {
+    throw new Error('options.pin must be exactly 6 digits');
   }
 
   const secretKey = new TextEncoder().encode(options.jwtSecret);
@@ -326,6 +359,16 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
     currentPin = pin;
   };
 
+  // Pairing brute-force protection: consecutive failures lock /pair for a
+  // window; a successful pairing clears the counters. Clock injectable.
+  const rateLimit = {
+    maxFailures: options.pairRateLimit?.maxFailures ?? 5,
+    lockoutSeconds: options.pairRateLimit?.lockoutSeconds ?? 60,
+    now: options.pairRateLimit?.now ?? Date.now,
+  };
+  let pairFailures = 0;
+  let pairLockedUntil = 0;
+
   async function verifyToken(token: string): Promise<boolean> {
     try {
       await jwtVerify(token, secretKey, { issuer: GATEWAY_JWT_ISSUER });
@@ -347,9 +390,23 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
     return undefined;
   };
 
+  function samePath(a: string, b: string): boolean {
+    const resolvedA = path.resolve(a);
+    const resolvedB = path.resolve(b);
+    return process.platform === 'win32'
+      ? resolvedA.toLowerCase() === resolvedB.toLowerCase()
+      : resolvedA === resolvedB;
+  }
+
   async function resolveProject(id: string): Promise<UnifiedProject | null> {
     const projects = await scanProjects(options.scanOptions);
     return projects.find((project) => project.id === id) ?? null;
+  }
+
+  /** Resolves a project by its filesystem path against the scanned projects. */
+  async function resolveProjectByPath(projectPath: string): Promise<UnifiedProject | null> {
+    const projects = await scanProjects(options.scanOptions);
+    return projects.find((project) => samePath(project.path, projectPath)) ?? null;
   }
 
   // --- Skills toggle store -------------------------------------------------
@@ -382,10 +439,30 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
     if (!/^\d{6}$/.test(pin)) {
       return reply.code(400).send({ error: 'pin must be a 6-digit code' });
     }
+
+    const nowMs = rateLimit.now();
+    if (nowMs < pairLockedUntil) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((pairLockedUntil - nowMs) / 1000));
+      return reply
+        .code(429)
+        .header('retry-after', String(retryAfterSeconds))
+        .send({ error: 'too many failed pairing attempts; try again later', retryAfterSeconds });
+    }
+
     const expected = getPin();
-    if (!expected || pin !== expected) {
+    if (!expected || !pinsMatch(pin, expected)) {
+      pairFailures += 1;
+      if (pairFailures >= rateLimit.maxFailures) {
+        pairLockedUntil = nowMs + rateLimit.lockoutSeconds * 1000;
+        pairFailures = 0;
+      }
       return reply.code(403).send({ error: 'invalid pairing pin' });
     }
+
+    // Successful pairing clears the failure counters and any stale lockout.
+    pairFailures = 0;
+    pairLockedUntil = 0;
+
     const issuedAt = Math.floor(Date.now() / 1000);
     const token = await new SignJWT({ scope: 'crosscode-gateway' })
       .setProtectedHeader({ alg: 'HS256' })
@@ -644,8 +721,9 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
         return;
       }
       if (!resolved) {
+        // Stay connected without a session: actions reply with error frames
+        // instead of silently succeeding.
         send({ type: 'error', message: 'no session available for this connection' });
-        ws.close(WS_CLOSE_NO_SESSION, 'no session');
         return;
       }
 
@@ -723,6 +801,24 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
             send({ type: 'error', message: 'approvalId is required' });
             return;
           }
+          if (!session) {
+            send({ type: 'error', message: 'no session attached' });
+            return;
+          }
+          const record = pendingApprovals.get(approvalId);
+          if (!record) {
+            send({ type: 'error', message: `unknown pending approval '${approvalId}'` });
+            return;
+          }
+          // Ownership check: an approval may only be resolved on the session
+          // that raised it.
+          if (record.sessionId !== session.sessionId) {
+            send({
+              type: 'error',
+              message: `approval '${approvalId}' does not belong to session '${session.sessionId}'`,
+            });
+            return;
+          }
           const approved = frame.type === 'approve';
           // The registry owns resolution: it invokes the callback captured at
           // registration time, which forwards the decision to the session.
@@ -751,21 +847,40 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
             send({ type: 'error', message: 'providerId is required' });
             return;
           }
+          let persisted = false;
           if (connectionProjectPath) {
+            // Only persist for projects the scanner actually knows about — a
+            // random ?projectPath= must not gain arbitrary filesystem writes.
+            const project = await resolveProjectByPath(connectionProjectPath);
+            if (!project) {
+              send({
+                type: 'error',
+                message: `projectPath '${connectionProjectPath}' is not a scanned project; refusing to persist the provider switch`,
+              });
+              return;
+            }
             try {
-              await switchboard.switchProvider(connectionProjectPath, providerId);
+              await switchboard.switchProvider(project.path, providerId);
+              persisted = true;
             } catch (error) {
               send({ type: 'error', message: (error as Error).message });
               return;
             }
           }
-          if (session) {
-            try {
-              await session.handleAction({ type: 'switch_provider', providerId });
-            } catch (error) {
-              send({ type: 'error', message: (error as Error).message });
-              return;
-            }
+          if (!session) {
+            send({
+              type: 'error',
+              message: persisted
+                ? 'provider persisted, but no session is attached to forward the switch to'
+                : 'switch_provider requires a scanned ?projectPath= query parameter or an attached session',
+            });
+            return;
+          }
+          try {
+            await session.handleAction({ type: 'switch_provider', providerId });
+          } catch (error) {
+            send({ type: 'error', message: (error as Error).message });
+            return;
           }
           send({ type: 'provider_switched', providerId });
           return;
@@ -776,7 +891,12 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
     };
 
     ws.on('message', (data: unknown) => {
-      void handleClientMessage(typeof data === 'string' ? data : String(data));
+      handleClientMessage(typeof data === 'string' ? data : String(data)).catch((error: Error) => {
+        // Guard against unhandled rejections: any unexpected failure in the
+        // async message pipeline (e.g. a throwing session callback) is
+        // reported back to the client as an error frame.
+        send({ type: 'error', message: error.message });
+      });
     });
 
     ws.on('close', () => {
@@ -800,11 +920,16 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
     // Token via query parameter authenticates immediately on connect.
     const queryToken = url.searchParams.get('token');
     if (queryToken !== null) {
-      void authenticate(queryToken).then((ok) => {
-        if (!ok) {
-          ws.close(WS_CLOSE_UNAUTHORIZED, 'unauthorized');
-        }
-      });
+      authenticate(queryToken)
+        .then((ok) => {
+          if (!ok) {
+            ws.close(WS_CLOSE_UNAUTHORIZED, 'unauthorized');
+          }
+        })
+        .catch((error: Error) => {
+          send({ type: 'error', message: error.message });
+          ws.close(1011, 'internal error');
+        });
     }
   });
 
