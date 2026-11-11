@@ -9,7 +9,7 @@
 [![pnpm](https://img.shields.io/badge/pnpm-Monorepo-F69220?logo=pnpm&logoColor=white)](https://pnpm.io/)
 [![React 19](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![MCP](https://img.shields.io/badge/MCP-Unified_Hub-8B5CF6)](https://modelcontextprotocol.io/)
-[![Tests](https://img.shields.io/badge/Tests-133_Passed-10B981)](#测试与质量保障)
+[![Tests](https://img.shields.io/badge/Tests-146_Passed-10B981)](#测试与质量保障)
 
 </div>
 
@@ -146,25 +146,27 @@ pnpm test
 pnpm --filter @crosscode/web dev
 ```
 
-在代码中启动本地守护进程网关与 Unified MCP Hub：
+在代码中启动本地守护进程网关与 Skills 虚拟化中心：
 ```typescript
-import { createCrossCodeGateway } from '@crosscode/daemon';
-import { UnifiedMcpHub } from '@crosscode/mcp-hub';
+import { createGateway } from '@crosscode/daemon';
+import { SkillVirtualizer } from '@crosscode/mcp-hub';
 
-// 1. 启动统一 MCP 与技能虚拟化中心
-const mcpHub = new UnifiedMcpHub({
-  skillsRootDir: 'C:\\Users\\<YourUser>\\.agents\\skills',
+// 1. Skills 虚拟化：扫描中心技能库并零拷贝同步到各 App（Windows Junction，免管理员权限）
+const skills = new SkillVirtualizer(); // 默认 SSOT 为 ~\.agents\skills，目录均可注入
+await skills.scan();
+await skills.syncToApps();
+
+// 2. 启动 Unified MCP Server（16 个共享工具，stdio 传输；可用 registerIntoAppConfigs
+//    幂等注册进各家编程 App 的 MCP 配置。CLI 直启：
+//    node packages/mcp-hub/dist/index.js --mcp-stdio）
+
+// 3. 启动本地 REST + WebSocket 统合网关
+const gateway = createGateway({
+  jwtSecret: process.env.CROSSCODE_JWT_SECRET!, // HS256 签名密钥（必填）
+  pin: '884866',                                // 远程设备 6 位配对码；省略则每次启动随机生成
+  scanOptions: { workspaceRoots: ['F:\\cs'] },  // 项目扫描范围（可选，默认全量默认目录）
 });
-await mcpHub.syncAllSkills();
-
-// 2. 启动本地 HTTP + WebSocket 统合网关
-const gateway = await createCrossCodeGateway({
-  port: 4399,
-  workspaceRoots: ['F:\\cs'],
-  pairingPin: '884866', // 远程设备 / 手机端 6 位配对码
-});
-
-console.log(`CrossCode Daemon listening at ${gateway.url}`);
+await gateway.app.listen({ port: 4399, host: '127.0.0.1' });
 ```
 
 ---
@@ -175,21 +177,22 @@ CrossCode Daemon 原生提供结构化 REST 与双向 WebSocket 接口，后期�
 
 | 端点 / 通道 | 方法 | 说明 |
 | :--- | :--- | :--- |
-| `/api/auth/pair` | `POST` | 输入本机 6 位配对 PIN 码，换取远程设备访问 `JWT Token` |
-| `/api/projects` | `GET` | 获取本机跨 App 自动归集的全量项目列表、活跃 Agent 与 `.agent` 状态 |
-| `/api/projects/:id/switch` | `POST` | 无缝热切换指定项目的底层执行 `Harness`、`Provider` 或 `AgentMode` |
-| `/api/providers` | `GET / POST` | 查看各模型服务商健康度延迟，或新增/更新 Provider 渠道配置 |
-| `/api/skills` | `GET / POST` | 查询全局共享 Skills 注册表，一键启用/禁用或触发全平台同步 |
-| `/api/projects/:id/diff` | `GET` | 获取当前项目工作区未提交的变更文件列表与 Unified Diff 补丁 |
-| `/api/projects/:id/diff/accept` | `POST` | 远程确认并暂存（Stage）Agent 生成的代码变更 |
-| `/api/projects/:id/diff/discard` | `POST` | 远程一键回滚（Discard）不满意的文件修改 |
-| `/ws` | `WebSocket` | 双向实时流：下行推送 `UnifiedStreamEvent`（思考流、工具调用、代码变更、`CC-XXXX` 报错、实时屏幕帧）；上行发送 `prompt`、`approve_tool`、`interrupt`、`remote_input` |
+| `/pair` | `POST` | 输入本机 6 位配对 PIN 码（连续失败触发速率锁定），换取远程设备访问 `JWT Token` |
+| `/projects` | `GET` | 获取本机跨 App 自动归集的全量项目列表、活跃 Agent 与 `.agent` 状态 |
+| `/providers` | `GET` | 获取 Provider 目录（内置 6 家 + 自定义 OpenAI 兼容端点）与环境变量注入规格 |
+| `/projects/:id/harness` | `POST` | 无缝热切换指定项目的底层执行引擎 `Harness`（并同步 `.agent/manifest.json`） |
+| `/projects/:id/provider` | `POST` | 无缝热切换指定项目的模型 `Provider`（持久化至 `.agent/runtime/provider-state.json`） |
+| `/skills` | `GET / PUT` | 查询全局共享 Skills 注册表，逐项启用/禁用 |
+| `/projects/:id/diff` | `GET` | 获取当前项目工作区未提交的变更文件列表与 Unified Diff 补丁（`core.quotepath=off`，中文路径原生显示） |
+| `/projects/:id/diff/accept` | `POST` | 远程确认并暂存（`git add`）Agent 生成的代码变更 |
+| `/projects/:id/diff/discard` | `POST` | 远程一键回滚（`git checkout --`）不满意的文件修改 |
+| `/ws/session` | `WebSocket` | 双向实时流：下行推送 `UnifiedStreamEvent`（思考流、工具调用、代码变更、`CC-XXXX` 报错）、`approval_request` 审批卡与 `screen_frame` 实时屏幕帧；上行发送 `auth`、`approve`、`reject`、`send_prompt`、`switch_provider` |
 
 ---
 
 ## 🧪 测试与质量保障
 
-本项目严格遵循 **TDD（测试驱动开发）** 构建，内置 11 个测试套件共 **133 项自动化测试**：
+本项目严格遵循 **TDD（测试驱动开发）** 构建，内置 11 个测试套件共 **146 项自动化测试**：
 - `@crosscode/shared`: 核心契约校验 + 11 类 `CC-XXXX` 跨应用报错正则与自愈策略全覆盖测试。
 - `@crosscode/mcp-hub`: Skills 目录虚拟化（Windows Junction + Frontmatter 转译）测试 + 内置浏览器、外置浏览器桥接、Win32 Computer Use 与安全围栏测试。
 - `@crosscode/daemon`: `.agent` 工作区幂等初始化与 Git 忽略测试 + 跨 6 大编程 App 项目扫描去重测试 + `CrossCodeNativeHarness` 与外部 Adapter 故障自动漂移接力测试 + JWT 配对与 Git Diff 网关集成测试。
