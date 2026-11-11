@@ -343,6 +343,14 @@ export function createWsCdpSocketFactory(): CdpSocketFactory {
         resolve: (value: Record<string, unknown>) => void;
         reject: (reason: Error) => void;
       }> = [];
+      let lastError: Error | null = null;
+
+      const rejectAllWaiters = (error: Error): void => {
+        while (waiters.length > 0) {
+          waiters.shift()!.reject(error);
+        }
+      };
+
       socket.on('message', (data: unknown) => {
         let parsed: Record<string, unknown>;
         try {
@@ -357,9 +365,14 @@ export function createWsCdpSocketFactory(): CdpSocketFactory {
         }
       });
       socket.on('close', () => {
-        while (waiters.length > 0) {
-          waiters.shift()!.reject(new ExternalBrowserBridgeError('CDP socket closed'));
-        }
+        rejectAllWaiters(new ExternalBrowserBridgeError('CDP socket closed'));
+      });
+      // Persistent listener: the `once('error')` used for the opening handshake
+      // is consumed by the first event, and a socket error after open with no
+      // listener would surface as an uncaught exception and crash the process.
+      socket.on('error', (error: Error) => {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        rejectAllWaiters(lastError);
       });
       return {
         send(payload: string): void {
@@ -368,6 +381,12 @@ export function createWsCdpSocketFactory(): CdpSocketFactory {
         async nextMessage(): Promise<Record<string, unknown>> {
           if (queue.length > 0) {
             return queue.shift()!;
+          }
+          if (lastError) {
+            throw lastError;
+          }
+          if (socket.readyState === WebSocket.CLOSED) {
+            throw new ExternalBrowserBridgeError('CDP socket closed');
           }
           return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
         },
@@ -408,7 +427,8 @@ export class CdpBrowserConnector implements ExternalBrowserConnector {
     return this.baseUrl;
   }
 
-  async listTabs(): Promise<ExternalTabInfo[]> {
+  /** Single GET /json/list with status + JSON validation shared by all CDP calls. */
+  private async fetchTargets(): Promise<Array<Record<string, unknown>>> {
     const response = await this.httpClient.get(`${this.baseUrl}/json/list`);
     if (response.status !== 200) {
       throw new ExternalBrowserBridgeError(
@@ -426,7 +446,12 @@ export class CdpBrowserConnector implements ExternalBrowserConnector {
     if (!Array.isArray(parsed)) {
       throw new ExternalBrowserBridgeError('CDP /json/list response is not an array');
     }
-    return (parsed as Array<Record<string, unknown>>).map((target) => ({
+    return parsed as Array<Record<string, unknown>>;
+  }
+
+  async listTabs(): Promise<ExternalTabInfo[]> {
+    const targets = await this.fetchTargets();
+    return targets.map((target) => ({
       id: String(target.id),
       title: target.title === undefined ? undefined : String(target.title),
       url: target.url === undefined ? undefined : String(target.url),
@@ -451,14 +476,18 @@ export class CdpBrowserConnector implements ExternalBrowserConnector {
   /**
    * Execute a CDP command on the page target: `action.kind` is the CDP method
    * (e.g. `Page.navigate`, `Runtime.evaluate`), `action.payload` the params.
+   * Uses a single /json/list request to locate the target.
    */
   async execAction(tabId: string, action: ExternalBrowserAction): Promise<unknown> {
-    const tabs = await this.listTabs();
-    const tab = tabs.find((candidate) => candidate.id === tabId);
-    if (!tab) {
+    const targets = await this.fetchTargets();
+    const target = targets.find((candidate) => String(candidate.id) === tabId);
+    if (!target) {
       throw new ExternalBrowserBridgeError(`CDP tab ${tabId} not found (query /json/list)`);
     }
-    const webSocketDebuggerUrl = await this.resolveDebuggerUrl(tabId);
+    const webSocketDebuggerUrl = target.webSocketDebuggerUrl;
+    if (typeof webSocketDebuggerUrl !== 'string' || webSocketDebuggerUrl.length === 0) {
+      throw new ExternalBrowserBridgeError(`CDP target ${tabId} has no webSocketDebuggerUrl`);
+    }
     const socket = await this.socketFactory.connect(webSocketDebuggerUrl);
     const id = 1;
     try {
@@ -509,20 +538,6 @@ export class CdpBrowserConnector implements ExternalBrowserConnector {
           reject(error instanceof Error ? error : new Error(String(error)));
         });
     });
-  }
-
-  private async resolveDebuggerUrl(tabId: string): Promise<string> {
-    const response = await this.httpClient.get(`${this.baseUrl}/json/list`);
-    if (response.status !== 200) {
-      throw new ExternalBrowserBridgeError(`CDP /json/list returned HTTP ${response.status}`);
-    }
-    const targets = JSON.parse(response.body) as Array<Record<string, unknown>>;
-    const target = targets.find((candidate) => String(candidate.id) === tabId);
-    const url = target?.webSocketDebuggerUrl;
-    if (typeof url !== 'string' || url.length === 0) {
-      throw new ExternalBrowserBridgeError(`CDP target ${tabId} has no webSocketDebuggerUrl`);
-    }
-    return url;
   }
 }
 

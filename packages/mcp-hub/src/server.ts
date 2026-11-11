@@ -34,6 +34,8 @@ import {
 import { SkillVirtualizer, type SkillVirtualizerOptions } from './skills/skill-virtualizer.js';
 import {
   BuiltinBrowser,
+  BuiltinBrowserError,
+  builtinBrowserNormalizedError,
   type BuiltinBrowserOptions,
 } from './tools/builtin-browser.js';
 import {
@@ -623,6 +625,11 @@ export function createUnifiedMcpServer(options: UnifiedMcpServerOptions = {}): U
         content: [{ type: 'text', text: `Tool ${toolName} failed: ${message}` }],
         isError: true,
       };
+      if (error instanceof BuiltinBrowserError) {
+        // Normalize builtin-browser failures into the CC-TOOL-4001 envelope so
+        // callers can emit a `normalized_error` UnifiedStreamEvent directly.
+        failure.structuredContent = { error: builtinBrowserNormalizedError(message) };
+      }
       return toSdkCallToolResult(failure);
     }
   });

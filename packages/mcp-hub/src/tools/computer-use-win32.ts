@@ -222,6 +222,10 @@ export interface ComputerUseOptions {
   safetyPolicy?: SafetyPolicyConfig;
   /** Screenshot is scaled down so the longer edge stays within this bound. Default 1600. */
   maxScreenshotEdge?: number;
+  /** Pending approvals expire (are discarded) after this long. Default 5 minutes. */
+  pendingApprovalTtlMs?: number;
+  /** Maximum number of simultaneously pending approvals; the oldest is evicted. Default 100. */
+  maxPendingApprovals?: number;
 }
 
 const SCREEN_MARKER = '__CC_SCREEN_JSON__';
@@ -231,13 +235,25 @@ const FOCUS_MARKER = '__CC_FOCUS__';
 const MOUSE_OK_MARKER = '__CC_MOUSE_OK__';
 const TYPE_OK_MARKER = '__CC_TYPE_OK__';
 const HOTKEY_OK_MARKER = '__CC_HOTKEY_OK__';
+const TITLE_MARKER = '__CC_TITLE__';
+
+/**
+ * Prepended to every generated script: without it powershell.exe writes
+ * stdout in the legacy console codepage and non-ASCII window titles (e.g.
+ * `记事本`) are decoded as mojibake by execFile's utf8 decoding.
+ */
+const PS_OUTPUT_ENCODING_HEADER = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8';
 
 const DEFAULT_MAX_SCREENSHOT_EDGE = 1600;
+const DEFAULT_PENDING_APPROVAL_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_MAX_PENDING_APPROVALS = 100;
 
 export class ComputerUseWin32 {
   private readonly executor: PowerShellExecutor;
   private readonly policy: ResolvedSafetyPolicy;
   private readonly maxScreenshotEdge: number;
+  private readonly pendingApprovalTtlMs: number;
+  private readonly maxPendingApprovals: number;
   private readonly pendingApprovals = new Map<
     string,
     { record: PendingApproval; run: () => Promise<unknown> }
@@ -253,11 +269,39 @@ export class ComputerUseWin32 {
       sensitiveWindowTitles: cfg.sensitiveWindowTitles ?? [],
     };
     this.maxScreenshotEdge = Math.max(1, Math.floor(options.maxScreenshotEdge ?? DEFAULT_MAX_SCREENSHOT_EDGE));
+    this.pendingApprovalTtlMs = Math.max(
+      0,
+      Math.floor(options.pendingApprovalTtlMs ?? DEFAULT_PENDING_APPROVAL_TTL_MS),
+    );
+    this.maxPendingApprovals = Math.max(
+      1,
+      Math.floor(options.maxPendingApprovals ?? DEFAULT_MAX_PENDING_APPROVALS),
+    );
   }
 
   // ------------------------------ approvals -------------------------------
 
+  private pruneExpiredApprovals(): void {
+    const now = Date.now();
+    for (const [id, entry] of this.pendingApprovals) {
+      if (now - Date.parse(entry.record.createdAt) > this.pendingApprovalTtlMs) {
+        this.pendingApprovals.delete(id);
+      }
+    }
+  }
+
+  private evictOverflowingApprovals(): void {
+    while (this.pendingApprovals.size >= this.maxPendingApprovals) {
+      const oldest = this.pendingApprovals.keys().next();
+      if (oldest.done || oldest.value === undefined) {
+        break;
+      }
+      this.pendingApprovals.delete(oldest.value);
+    }
+  }
+
   listPendingApprovals(): PendingApproval[] {
+    this.pruneExpiredApprovals();
     return [...this.pendingApprovals.values()].map((entry) => ({
       ...entry.record,
       originalAction: { ...entry.record.originalAction },
@@ -269,6 +313,7 @@ export class ComputerUseWin32 {
    * The pending item is consumed either way.
    */
   async approve(approvalId: string): Promise<ApprovalDecision> {
+    this.pruneExpiredApprovals();
     const entry = this.pendingApprovals.get(approvalId);
     if (!entry) {
       throw new ComputerUseError(`Unknown approval id: ${approvalId}`);
@@ -280,6 +325,7 @@ export class ComputerUseWin32 {
 
   /** Discard a pending action without executing it. */
   reject(approvalId: string, reason?: string): ApprovalDecision {
+    this.pruneExpiredApprovals();
     const entry = this.pendingApprovals.get(approvalId);
     if (!entry) {
       throw new ComputerUseError(`Unknown approval id: ${approvalId}`);
@@ -299,6 +345,8 @@ export class ComputerUseWin32 {
     originalAction: Record<string, unknown>,
     run: () => Promise<unknown>,
   ): ApprovalRequiredResult {
+    this.pruneExpiredApprovals();
+    this.evictOverflowingApprovals();
     const approvalId = randomUUID();
     const record: PendingApproval = {
       approvalId,
@@ -355,6 +403,7 @@ export class ComputerUseWin32 {
     const maxEdge = this.maxScreenshotEdge;
     return [
       "$ErrorActionPreference = 'Stop'",
+      PS_OUTPUT_ENCODING_HEADER,
       'Add-Type -AssemblyName System.Drawing',
       'Add-Type -AssemblyName System.Windows.Forms',
       '$bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds',
@@ -429,6 +478,7 @@ export class ComputerUseWin32 {
     const hasTarget = input.x !== undefined && input.y !== undefined;
     const lines: string[] = [
       "$ErrorActionPreference = 'Stop'",
+      PS_OUTPUT_ENCODING_HEADER,
       NATIVE_MOUSE_TYPE,
       ...NATIVE_MOUSE_BOOT,
     ];
@@ -539,6 +589,7 @@ export class ComputerUseWin32 {
     const psLiteral = escapePsSingleQuoted(escaped);
     return [
       "$ErrorActionPreference = 'Stop'",
+      PS_OUTPUT_ENCODING_HEADER,
       'Add-Type -AssemblyName System.Windows.Forms',
       '[System.Windows.Forms.SendKeys]::SendWait(\'' + psLiteral + '\')',
       `Write-Output ('${TYPE_OK_MARKER}{"performed":"type"}')`,
@@ -548,6 +599,7 @@ export class ComputerUseWin32 {
   private buildHotkeyScript(sequence: Array<{ vk: number; isModifier: boolean }>): string {
     const lines: string[] = [
       "$ErrorActionPreference = 'Stop'",
+      PS_OUTPUT_ENCODING_HEADER,
       NATIVE_KEYBOARD_TYPE,
       ...NATIVE_KEYBOARD_BOOT,
     ];
@@ -597,10 +649,37 @@ export class ComputerUseWin32 {
   private buildWindowListScript(): string {
     return [
       "$ErrorActionPreference = 'Stop'",
+      PS_OUTPUT_ENCODING_HEADER,
       NATIVE_WINDOW_TYPE,
       ...NATIVE_WINDOW_BOOT,
       `$items = [CCWindowEnum]::Enumerate()`,
       `foreach ($item in $items) { Write-Output ('${WINDOW_MARKER}' + $item) }`,
+    ].join('\n');
+  }
+
+  /**
+   * Read back a window's title by handle (used before the safety policy runs
+   * on hwnd-only focus requests, so sensitive-title rules cannot be bypassed).
+   * The title travels base64-encoded, immune to console codepage issues.
+   */
+  private async resolveWindowTitle(hwnd: number): Promise<string> {
+    const script = this.buildWindowTitleScript(hwnd);
+    const result = await this.executor.exec(script);
+    if (result.exitCode !== 0) {
+      throw new ComputerUseError(`computer_window_focus title readback failed: ${result.stderr || result.stdout}`);
+    }
+    return parseMarkedBase64(result.stdout, TITLE_MARKER);
+  }
+
+  private buildWindowTitleScript(hwnd: number): string {
+    return [
+      "$ErrorActionPreference = 'Stop'",
+      PS_OUTPUT_ENCODING_HEADER,
+      NATIVE_WINDOW_TYPE,
+      ...NATIVE_WINDOW_BOOT,
+      `$target = [IntPtr]::new(${Math.floor(hwnd)})`,
+      '$title = [CCWindowEnum]::GetTitle($target)',
+      `Write-Output ('${TITLE_MARKER}' + [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($title)))`,
     ].join('\n');
   }
 
@@ -614,6 +693,23 @@ export class ComputerUseWin32 {
         return this.requestApproval('computer_window_focus', risk, { ...input }, async () => {
           return this.executeWindowFocus(input);
         });
+      }
+      return this.executeWindowFocus(input);
+    }
+    // hwnd-only path: resolve the window title first so sensitive-title rules
+    // cannot be bypassed by focusing by handle instead of by title.
+    if (this.policy.sensitiveWindowTitles.length > 0) {
+      const resolvedTitle = await this.resolveWindowTitle(input.hwnd!);
+      const risk = this.assessWindowFocusRisk(resolvedTitle);
+      if (risk) {
+        return this.requestApproval(
+          'computer_window_focus',
+          risk,
+          { ...input, resolvedTitle },
+          async () => {
+            return this.executeWindowFocus(input);
+          },
+        );
       }
     }
     return this.executeWindowFocus(input);
@@ -654,6 +750,7 @@ export class ComputerUseWin32 {
   private buildWindowFocusScript(input: WindowFocusInput): string {
     const lines: string[] = [
       "$ErrorActionPreference = 'Stop'",
+      PS_OUTPUT_ENCODING_HEADER,
       NATIVE_WINDOW_TYPE,
       ...NATIVE_WINDOW_BOOT,
     ];
@@ -724,6 +821,11 @@ const NATIVE_WINDOW_TYPE = [
   '  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);',
   '  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);',
   '  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string className, string windowName);',
+  '  public static string GetTitle(IntPtr hWnd) {',
+  '    var sb = new StringBuilder(512);',
+  '    GetWindowText(hWnd, sb, 512);',
+  '    return sb.ToString();',
+  '  }',
   '  public static List<string> Enumerate() {',
   '    var list = new List<string>();',
   '    EnumWindows((hWnd, lParam) => {',
@@ -777,6 +879,17 @@ function parseMarkedJson(stdout: string, marker: string): Record<string, unknown
   throw new ComputerUseError(`PowerShell output did not contain the ${marker} marker`);
 }
 
+/** Parse a base64-encoded UTF-8 value printed after `marker` (codepage-proof channel). */
+function parseMarkedBase64(stdout: string, marker: string): string {
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.startsWith(marker)) {
+      continue;
+    }
+    const body = line.slice(marker.length).trim();
+    return Buffer.from(body, 'base64').toString('utf8');
+  }
+  throw new ComputerUseError(`PowerShell output did not contain the ${marker} marker`);
+}
 /** Escape a value for embedding inside a PowerShell single-quoted literal. */
 function escapePsSingleQuoted(value: string): string {
   return value.replace(/'/g, "''");
@@ -794,7 +907,7 @@ const WIN_KEY_TOKENS = new Set(['win', 'meta', 'windows']);
 function escapeSendKeys(text: string): string {
   let out = '';
   for (const char of text) {
-    if ('+^%~(){}'.includes(char)) {
+    if ('+^%~(){}[]'.includes(char)) {
       out += `{${char}}`;
     } else {
       out += char;

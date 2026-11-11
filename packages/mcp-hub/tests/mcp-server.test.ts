@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { WebSocket } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { NormalizedAgentError } from '@crosscode/shared';
@@ -18,6 +18,7 @@ import {
   SkillVirtualizer,
   buildApprovalRequiredError,
   createUnifiedMcpServer,
+  createWsCdpSocketFactory,
   defaultMcpServerEntry,
   registerIntoAppConfigs,
   BUILTIN_BROWSER_TOOL_NAMES,
@@ -343,6 +344,13 @@ describe('Task 5: unified MCP server', () => {
     expect(failed.isError).toBe(true);
     const text = (failed.content as Array<{ type: string; text?: string }>)[0].text ?? '';
     expect(text).toContain('browser_builtin_open');
+    // Builtin-browser errors carry the CC-TOOL-4001 normalized error envelope
+    const errorEnvelope = (failed.structuredContent ?? {}) as {
+      error?: NormalizedAgentError;
+    };
+    expect(errorEnvelope.error?.code).toBe('CC-TOOL-4001');
+    expect(errorEnvelope.error?.category).toBe('TOOL');
+    expect(errorEnvelope.error?.recoveryAction).toBe('RESTART_PROCESS');
 
     await expect(
       client.callTool({ name: 'does_not_exist', arguments: {} }),
@@ -700,6 +708,51 @@ describe('Task 5: external browser bridge (real local ws, fake extension + CDP)'
       method: 'Runtime.evaluate',
       params: { expression: '6*7' },
     });
+    // execAction locates the tab and the debugger URL from ONE /json/list call:
+    // listTabs(1) + execAction(1) — no duplicate request.
+    expect(calls.filter((url) => url.endsWith('/json/list'))).toHaveLength(2);
+  });
+
+  it('CdpBrowserConnector wraps malformed /json/list payloads with a bridge error', async () => {
+    const httpClient: CdpHttpClient = {
+      async get() {
+        return { status: 200, body: 'not-json at all' };
+      },
+    };
+    const cdp = new CdpBrowserConnector({ httpClient });
+    await expect(cdp.listTabs()).rejects.toThrow(ExternalBrowserBridgeError);
+    await expect(cdp.listTabs()).rejects.toThrow(/invalid JSON/);
+  });
+
+  it('default CDP socket factory survives socket errors after open (no uncaught exception)', async () => {
+    const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((resolve) => wss.once('listening', () => resolve()));
+    const port = (wss.address() as AddressInfo).port;
+    closers.push(async () => {
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+    });
+
+    const serverSocketPromise = new Promise<WebSocket>((resolve) => {
+      wss.once('connection', (serverSocket) => resolve(serverSocket));
+    });
+    const factory = createWsCdpSocketFactory();
+    const socket = await factory.connect(`ws://127.0.0.1:${port}`);
+    const serverSocket = await serverSocketPromise;
+
+    // A pending nextMessage waiter plus a post-open socket error must not crash
+    // the process (vitest fails the run on uncaught exceptions).
+    const pending = socket.nextMessage();
+    // Trigger a deterministic protocol violation on the wire: a frame with RSV
+    // bits set (no extension was negotiated) -> client emits 'error'.
+    const rawSocket = (
+      serverSocket as unknown as { _socket: { write: (chunk: Buffer) => void } }
+    )._socket;
+    rawSocket.write(Buffer.from([0xc0, 0x00]));
+
+    await expect(pending).rejects.toThrow();
+    // The socket object is still usable after the error (nextMessage fails fast)
+    await expect(socket.nextMessage()).rejects.toThrow();
+    await socket.close();
   });
 
   it('falls back to CDP when no extension is connected, and errors when nothing is available', async () => {
@@ -893,11 +946,13 @@ describe('Task 5: computer use win32 (fake PowerShell executor, safety gate)', (
     executor.queueMarked('__CC_TYPE_OK__', { performed: 'type' });
     const cu = new ComputerUseWin32({ executor });
 
-    const result = await cu.keyboardAction({ action: 'type', text: "a^b it's (ok)" });
-    expect(result).toEqual({ performed: 'type', text: "a^b it's (ok)" });
+    const result = await cu.keyboardAction({ action: 'type', text: "a^b it's (ok) [v1]" });
+    expect(result).toEqual({ performed: 'type', text: "a^b it's (ok) [v1]" });
     const script = executor.scripts[0];
     expect(script).toContain('Add-Type -AssemblyName System.Windows.Forms');
-    expect(script).toContain("[System.Windows.Forms.SendKeys]::SendWait('a{^}b it''s {(}ok{)}')");
+    expect(script).toContain(
+      "[System.Windows.Forms.SendKeys]::SendWait('a{^}b it''s {(}ok{)} {[}v1{]}')",
+    );
   });
 
   it('computer_keyboard_action: allowed hotkeys emit keybd_event sequences with resolved VK codes', async () => {
@@ -988,6 +1043,10 @@ describe('Task 5: computer use win32 (fake PowerShell executor, safety gate)', (
   it('computer_window_focus: sensitive titles are held for approval; others run SetForegroundWindow', async () => {
     const executor = new FakePowerShellExecutor();
     executor.queueMarked('__CC_FOCUS__', { focused: true, hwnd: 777, title: 'Bank Portal' });
+    // hwnd-only requests now read the window title back before the policy runs
+    executor.queue({
+      stdout: `__CC_TITLE__${Buffer.from('Code Editor', 'utf8').toString('base64')}\n`,
+    });
     executor.queueMarked('__CC_FOCUS__', { focused: true, hwnd: 42 });
     const cu = new ComputerUseWin32({
       executor,
@@ -1012,13 +1071,128 @@ describe('Task 5: computer use win32 (fake PowerShell executor, safety gate)', (
     const blockedRegex = await cu.windowFocus({ title: 'Enter your password' });
     expect('status' in blockedRegex && blockedRegex.status === 'approval_required').toBe(true);
 
-    // benign hwnd executes directly
+    // benign hwnd: title readback first (non-sensitive), then the focus script
     const ok = await cu.windowFocus({ hwnd: 42 });
     expect(ok).toEqual({ focused: true, hwnd: 42 });
-    expect(executor.scripts[1]).toContain('[IntPtr]::new(42)');
-    expect(executor.scripts[1]).not.toContain('FindWindow($null');
+    expect(executor.scripts[1]).toContain('GetTitle($target)');
+    expect(executor.scripts[1]).toContain('__CC_TITLE__');
+    expect(executor.scripts[2]).toContain('[IntPtr]::new(42)');
+    expect(executor.scripts[2]).not.toContain('FindWindow($null');
 
     await expect(cu.windowFocus({})).rejects.toThrow(/hwnd or title/);
+  });
+
+  it('SafetyPolicy: focusing by hwnd reads the title back so sensitive rules cannot be bypassed', async () => {
+    const executor = new FakePowerShellExecutor();
+    // The readback travels base64-encoded (like the real flow) and carries a
+    // sensitive Chinese title: decoded via UTF-8 on the Node side.
+    executor.queue({
+      stdout: `__CC_TITLE__${Buffer.from('记事本 - 银行门户', 'utf8').toString('base64')}\n`,
+    });
+    executor.queueMarked('__CC_FOCUS__', { focused: true, hwnd: 777 });
+    const cu = new ComputerUseWin32({
+      executor,
+      safetyPolicy: { sensitiveWindowTitles: ['银行'] },
+    });
+
+    const blocked = await cu.windowFocus({ hwnd: 777 });
+    const held = blocked as Extract<typeof blocked, { status: 'approval_required' }>;
+    expect(held.status).toBe('approval_required');
+    expect(held.code).toBe('CC-TOOL-4002');
+    expect(held.recoveryAction).toBe('AWAIT_APPROVAL');
+    expect(held.reason).toMatch(/sensitive title/i);
+    expect(held.originalAction).toMatchObject({ hwnd: 777, resolvedTitle: '记事本 - 银行门户' });
+    // only the passive title readback ran while the action is pending
+    expect(executor.scripts).toHaveLength(1);
+    expect(executor.scripts[0]).toContain('GetTitle($target)');
+    expect(cu.listPendingApprovals()).toHaveLength(1);
+
+    // approve -> the focus script finally runs
+    const decision = await cu.approve(held.approvalId);
+    expect(decision.executed).toBe(true);
+    expect(executor.scripts[1]).toContain('SetForegroundWindow($target)');
+    expect(executor.scripts[1]).toContain('[IntPtr]::new(777)');
+    expect(cu.listPendingApprovals()).toHaveLength(0);
+  });
+
+  it('windowFocus by hwnd skips the title readback when no sensitive rules are configured', async () => {
+    const executor = new FakePowerShellExecutor();
+    executor.queueMarked('__CC_FOCUS__', { focused: true, hwnd: 5 });
+    const cu = new ComputerUseWin32({ executor });
+
+    const ok = await cu.windowFocus({ hwnd: 5 });
+    expect(ok).toEqual({ focused: true, hwnd: 5 });
+    expect(executor.scripts).toHaveLength(1);
+    expect(executor.scripts[0]).not.toContain('[CCWindowEnum]::GetTitle');
+  });
+
+  it('every generated PowerShell script sets a UTF-8 console output encoding header', async () => {
+    const executor = new FakePowerShellExecutor();
+    executor.queueMarked('__CC_SCREEN_JSON__', {
+      width: 100,
+      height: 50,
+      scaledWidth: 100,
+      scaledHeight: 50,
+      base64: 'AAAB',
+    });
+    executor.queueMarked('__CC_MOUSE_OK__', { performed: 'left_click' });
+    executor.queueMarked('__CC_TYPE_OK__', { performed: 'type' });
+    executor.queueMarked('__CC_HOTKEY_OK__', { performed: 'hotkey' });
+    executor.queueLines(['__CC_WINDOW__1__SEP__记事本 - 无标题']);
+    executor.queue({
+      stdout: `__CC_TITLE__${Buffer.from('记事本', 'utf8').toString('base64')}\n`,
+    });
+    executor.queueMarked('__CC_FOCUS__', { focused: true, hwnd: 1 });
+    const cu = new ComputerUseWin32({
+      executor,
+      safetyPolicy: { sensitiveWindowTitles: ['zzz-not-present'] },
+    });
+
+    await cu.screenshot();
+    await cu.mouseAction({ action: 'left_click', x: 1, y: 2 });
+    await cu.keyboardAction({ action: 'type', text: 'hi' });
+    await cu.keyboardAction({ action: 'hotkey', keys: 'Ctrl+C' });
+    const list = await cu.windowList();
+    // Non-ASCII titles survive the marked-line channel untouched.
+    expect(list.windows[0].title).toBe('记事本 - 无标题');
+    await cu.windowFocus({ hwnd: 1 });
+
+    // 7 scripts: screenshot, mouse, type, hotkey, list, title readback, focus
+    expect(executor.scripts).toHaveLength(7);
+    for (const script of executor.scripts) {
+      expect(script).toContain('[Console]::OutputEncoding = [System.Text.Encoding]::UTF8');
+      expect(script).toContain("$ErrorActionPreference = 'Stop'");
+    }
+    // The hwnd readback script transports the title base64-encoded.
+    expect(executor.scripts[5]).toContain('ToBase64String');
+    expect(executor.scripts[5]).toContain('GetTitle($target)');
+  });
+
+  it('pending approvals expire after their TTL and enforce a capacity cap', async () => {
+    const executor = new FakePowerShellExecutor();
+    const cu = new ComputerUseWin32({
+      executor,
+      pendingApprovalTtlMs: 40,
+      maxPendingApprovals: 2,
+    });
+
+    const first = await cu.mouseAction({ action: 'left_click' });
+    const second = await cu.mouseAction({ action: 'left_click' });
+    const third = await cu.mouseAction({ action: 'left_click' });
+    const heldFirst = first as Extract<typeof first, { status: 'approval_required' }>;
+    const heldSecond = second as Extract<typeof second, { status: 'approval_required' }>;
+    const heldThird = third as Extract<typeof third, { status: 'approval_required' }>;
+
+    // capacity 2: the oldest pending item (first) was evicted
+    expect(cu.listPendingApprovals()).toHaveLength(2);
+    await expect(cu.approve(heldFirst.approvalId)).rejects.toThrow(/Unknown approval id/);
+
+    // TTL 40ms: everything still pending expires — approve and reject both see it gone
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(cu.listPendingApprovals()).toHaveLength(0);
+    await expect(cu.approve(heldSecond.approvalId)).rejects.toThrow(/Unknown approval id/);
+    expect(() => cu.reject(heldThird.approvalId)).toThrow(/Unknown approval id/);
+    expect(executor.scripts).toHaveLength(0); // nothing ever executed
   });
 
   it('buildApprovalRequiredError produces a CC-TOOL-4002 NormalizedAgentError payload', () => {
