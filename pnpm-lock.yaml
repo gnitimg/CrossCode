@@ -24,6 +24,12 @@ importers:
         specifier: workspace:*
         version: link:../shared
 
+  packages/mcp-hub:
+    dependencies:
+      '@crosscode/shared':
+        specifier: workspace:*
+        version: link:../shared
+
   packages/shared: {}
 
 packages:
