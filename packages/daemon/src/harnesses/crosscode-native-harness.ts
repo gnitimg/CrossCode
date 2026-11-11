@@ -357,6 +357,14 @@ function killProcessTree(child: ChildProcess): void {
   }
 }
 
+export interface PendingToolApproval {
+  callId: string;
+  sessionId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface CrossCodeNativeHarnessOptions {
   projectPath: string;
   mode?: AgentMode;
@@ -365,6 +373,12 @@ export interface CrossCodeNativeHarnessOptions {
   externalAdapters?: Partial<Record<HarnessId, BaseHarnessAdapter>>;
   maxSteps?: number;
   providerId?: string;
+  /**
+   * When true, any tool with `requiresApproval: true` (such as `run_shell`)
+   * pauses after emitting `tool_call_start` until `resolveToolApproval(callId, approved)`
+   * or `abort()` is called.
+   */
+  enforceApprovalGate?: boolean;
 }
 
 /**
@@ -383,8 +397,13 @@ export class CrossCodeNativeHarness {
   private readonly externalAdapters: Partial<Record<HarnessId, BaseHarnessAdapter>>;
   private readonly maxSteps: number;
   private readonly providerId: string | undefined;
+  private readonly enforceApprovalGate: boolean;
   private readonly tools: Map<string, NativeTool>;
   private readonly bus = new HarnessEventBus();
+  private readonly pendingToolApprovals = new Map<
+    string,
+    { record: PendingToolApproval; resolve: (approved: boolean) => void }
+  >();
 
   private mode: AgentMode;
   private sessionIdValue: string | null = null;
@@ -397,6 +416,7 @@ export class CrossCodeNativeHarness {
     this.externalAdapters = options.externalAdapters ?? {};
     this.maxSteps = options.maxSteps ?? 12;
     this.providerId = options.providerId;
+    this.enforceApprovalGate = options.enforceApprovalGate ?? false;
     this.llm =
       options.llmClient ??
       new OpenAICompatibleClient({
@@ -441,6 +461,48 @@ export class CrossCodeNativeHarness {
       description: tool.description,
       inputSchema: tool.inputSchema,
     }));
+  }
+
+  /**
+   * Lists tool calls currently blocked waiting for human approval.
+   */
+  listPendingToolApprovals(): PendingToolApproval[] {
+    return [...this.pendingToolApprovals.values()].map((entry) => ({
+      ...entry.record,
+      args: { ...entry.record.args },
+    }));
+  }
+
+  /**
+   * Resolves a pending tool call approval by its `callId`. Returns `true`
+   * when a matching pending tool call was found and unblocked.
+   */
+  resolveToolApproval(callId: string, approved: boolean): boolean {
+    const entry = this.pendingToolApprovals.get(callId);
+    if (!entry) return false;
+    this.pendingToolApprovals.delete(callId);
+    entry.resolve(approved);
+    return true;
+  }
+
+  private waitForToolApproval(
+    callId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<boolean> {
+    if (this.abortRequested) {
+      return Promise.resolve(false);
+    }
+    const record: PendingToolApproval = {
+      callId,
+      sessionId: this.requireSessionId(),
+      toolName,
+      args: { ...args },
+      createdAt: new Date().toISOString(),
+    };
+    return new Promise<boolean>((resolve) => {
+      this.pendingToolApprovals.set(callId, { record, resolve });
+    });
   }
 
   /**
@@ -515,13 +577,41 @@ export class CrossCodeNativeHarness {
 
         for (const call of toolCalls) {
           const knownTool = this.tools.get(call.name);
+          const callArgs = asRecord(call.arguments) ?? {};
+          const requiresApproval = knownTool?.requiresApproval === true;
           this.emitToolCallStart(
             call.id,
             call.name,
-            asRecord(call.arguments) ?? {},
-            knownTool?.requiresApproval === true,
+            callArgs,
+            requiresApproval,
           );
-          const result = await this.executeToolCall(call);
+          let result: ToolExecutionResult;
+          if (requiresApproval && this.enforceApprovalGate) {
+            await updateActiveTask(this.projectPath, {
+              currentStep: `Awaiting approval for ${call.name}`,
+              completedSteps,
+            });
+            const approved = await this.waitForToolApproval(call.id, call.name, callArgs);
+            if (this.abortRequested) {
+              this.emitTextDelta('[crosscode-native] Task aborted by user request.');
+              await updateActiveTask(this.projectPath, {
+                status: 'in_progress',
+                currentStep: 'Aborted by user',
+                completedSteps,
+              });
+              return;
+            }
+            if (!approved) {
+              result = {
+                output: 'Tool execution rejected by user (CC-TOOL-4002: permission denied by user).',
+                isError: true,
+              };
+            } else {
+              result = await this.executeToolCall(call);
+            }
+          } else {
+            result = await this.executeToolCall(call);
+          }
           this.emitToolCallResult(call.id, call.name, truncateOutput(result.output), result.isError);
           if (result.isError) {
             await this.logToolFailure(call.name, result.output);
@@ -551,13 +641,21 @@ export class CrossCodeNativeHarness {
         nextSteps: [],
       });
     } finally {
+      for (const [callId, entry] of this.pendingToolApprovals) {
+        this.pendingToolApprovals.delete(callId);
+        entry.resolve(false);
+      }
       this.running = false;
     }
   }
 
-  /** Requests cancellation; takes effect between ReAct iterations. */
+  /** Requests cancellation; takes effect between ReAct iterations or while awaiting approval. */
   abort(): void {
     this.abortRequested = true;
+    for (const [callId, entry] of this.pendingToolApprovals) {
+      this.pendingToolApprovals.delete(callId);
+      entry.resolve(false);
+    }
   }
 
   stop(): void {

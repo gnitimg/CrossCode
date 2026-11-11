@@ -7,13 +7,18 @@ import * as path from 'node:path';
 import { WebSocket } from 'ws';
 import type { UnifiedStreamEvent } from '@crosscode/shared';
 import {
+  createDaemonSessionManager,
   createGateway,
   HarnessEventBus,
   InMemoryPendingApprovalRegistry,
   ProviderSwitchboard,
+  type ComputerUseApprovalBridgeTarget,
+  type ComputerUsePendingApprovalLike,
   type GatewayDownstreamFrame,
   type GatewayHandle,
   type GatewaySession,
+  type LLMClient,
+  type LLMResponse,
   type SessionClientAction,
 } from '../src/index.js';
 
@@ -948,6 +953,205 @@ describe('websocket /ws/session', () => {
     // The failure surfaces as an error frame (no unhandled rejection).
     const error = (await collector.waitFor((f) => f.type === 'error')) as { message: string };
     expect(error.message).toContain('approval callback exploded');
+    ws.close();
+  });
+
+  it('end-to-end createDaemonSessionManager: gates CrossCodeNativeHarness run_shell and ComputerUseWin32 approvals over WebSocket', async () => {
+    const root = await trackRoot();
+    const projectDir = await makeProject(root, 'e2e-approval-proj');
+    const approvedShellFile = path.join(projectDir, 'ws-approved.txt');
+    const rejectedShellFile = path.join(projectDir, 'ws-rejected.txt');
+
+    const llmResponses: LLMResponse[] = [
+      {
+        toolCalls: [
+          {
+            id: 'shell-call-1',
+            name: 'run_shell',
+            arguments: {
+              command: 'node -e "require(\'fs\').writeFileSync(\'ws-approved.txt\', \'approved-via-ws\')"',
+            },
+          },
+        ],
+      },
+      {
+        toolCalls: [
+          {
+            id: 'shell-call-2',
+            name: 'run_shell',
+            arguments: {
+              command: 'node -e "require(\'fs\').writeFileSync(\'ws-rejected.txt\', \'should-not-run\')"',
+            },
+          },
+        ],
+      },
+      { text: 'All tool approvals processed.' },
+    ];
+    let llmStep = 0;
+    const llmClient: LLMClient = {
+      complete: async () => {
+        const res = llmResponses[llmStep];
+        llmStep += 1;
+        if (!res) throw new Error('No more scripted LLM responses');
+        return res;
+      },
+    };
+
+    // Fake ComputerUseWin32 bridge target with real pending queue + listener
+    const cuListeners = new Set<(approval: ComputerUsePendingApprovalLike) => void>();
+    const cuPending = new Map<
+      string,
+      { record: ComputerUsePendingApprovalLike; run: () => Promise<unknown> }
+    >();
+    const executedDesktopActions: string[] = [];
+    const fakeComputerUse: ComputerUseApprovalBridgeTarget & {
+      triggerHighRiskAction(id: string, toolName: string, reason: string): void;
+    } = {
+      onApprovalRequest(listener) {
+        cuListeners.add(listener);
+        return () => cuListeners.delete(listener);
+      },
+      listPendingApprovals() {
+        return [...cuPending.values()].map((e) => e.record);
+      },
+      async approve(approvalId: string) {
+        const entry = cuPending.get(approvalId);
+        if (!entry) throw new Error(`Unknown approval id: ${approvalId}`);
+        cuPending.delete(approvalId);
+        const result = await entry.run();
+        return { approvalId, approved: true, executed: true, result };
+      },
+      reject(approvalId: string, reason?: string) {
+        const entry = cuPending.get(approvalId);
+        if (!entry) throw new Error(`Unknown approval id: ${approvalId}`);
+        cuPending.delete(approvalId);
+        return { approvalId, approved: false, executed: false, reason: reason ?? 'rejected' };
+      },
+      triggerHighRiskAction(id: string, toolName: string, reason: string) {
+        const record: ComputerUsePendingApprovalLike = {
+          approvalId: id,
+          toolName,
+          reason,
+          originalAction: { action: 'left_click' },
+          createdAt: new Date().toISOString(),
+        };
+        cuPending.set(id, {
+          record,
+          run: async () => {
+            executedDesktopActions.push(id);
+            return { performed: 'left_click' };
+          },
+        });
+        for (const listener of cuListeners) {
+          listener(record);
+        }
+      },
+    };
+
+    const sessionManager = createDaemonSessionManager({
+      defaultProjectPath: projectDir,
+      llmClient,
+      computerUse: fakeComputerUse,
+    });
+
+    const gateway = trackGateway(
+      createGateway({
+        jwtSecret: 'e2e-approval-secret',
+        pin: '123456',
+        sessionManager,
+        scanOptions: { workspaceRoots: [root], appConfigDirs: {}, maxWorkspaceDepth: 1 },
+      }),
+    );
+    await gateway.app.listen({ port: 0, host: '127.0.0.1' });
+    const address = gateway.app.server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+    const wsUrl = `ws://127.0.0.1:${port}/ws/session`;
+
+    const { token } = await pair(gateway, '123456');
+    const ws = new WebSocket(
+      `${wsUrl}?token=${encodeURIComponent(token!)}&projectPath=${encodeURIComponent(projectDir)}`,
+    );
+    const collector = new WsFrameCollector(ws);
+    await waitOpen(ws);
+    await collector.waitFor((f) => f.type === 'session_attached');
+
+    // 1. Trigger CrossCodeNativeHarness prompt that requests two run_shell calls
+    ws.send(JSON.stringify({ type: 'send_prompt', prompt: 'Run both shell commands' }));
+
+    const shellCard1 = (await collector.waitFor(
+      (f) => f.type === 'approval_request' && (f as { callId?: string }).callId === 'shell-call-1',
+    )) as { approvalId: string; callId: string; toolName: string };
+    expect(shellCard1.toolName).toBe('run_shell');
+
+    // While pending, ws-approved.txt must NOT exist yet
+    await sleep(60);
+    await expect(fs.access(approvedShellFile)).rejects.toThrow();
+
+    // Approve shell-call-1 over WebSocket -> command runs and creates ws-approved.txt
+    ws.send(JSON.stringify({ type: 'approve', approvalId: shellCard1.approvalId }));
+    await collector.waitFor(
+      (f) =>
+        f.type === 'approval_resolved' &&
+        (f as { approvalId: string }).approvalId === shellCard1.approvalId,
+    );
+    const shellResult1 = (await collector.waitFor(
+      (f) => f.type === 'tool_call_result' && (f as { callId: string }).callId === 'shell-call-1',
+    )) as { isError?: boolean; output: string };
+    expect(shellResult1.isError).toBe(false);
+    expect(await fs.readFile(approvedShellFile, 'utf8')).toBe('approved-via-ws');
+
+    // Next, shell-call-2 arrives and blocks awaiting approval
+    const shellCard2 = (await collector.waitFor(
+      (f) => f.type === 'approval_request' && (f as { callId?: string }).callId === 'shell-call-2',
+    )) as { approvalId: string; callId: string };
+    await sleep(60);
+    await expect(fs.access(rejectedShellFile)).rejects.toThrow();
+
+    // Reject shell-call-2 over WebSocket -> command is NOT executed
+    ws.send(JSON.stringify({ type: 'reject', approvalId: shellCard2.approvalId }));
+    const shellResult2 = (await collector.waitFor(
+      (f) => f.type === 'tool_call_result' && (f as { callId: string }).callId === 'shell-call-2',
+    )) as { isError?: boolean; output: string };
+    expect(shellResult2.isError).toBe(true);
+    expect(shellResult2.output).toContain('CC-TOOL-4002');
+    await expect(fs.access(rejectedShellFile)).rejects.toThrow();
+
+    await collector.waitFor(
+      (f) => f.type === 'text_delta' && (f as { text: string }).text === 'All tool approvals processed.',
+    );
+
+    // 2. Trigger ComputerUseWin32 high-risk desktop actions and resolve over WebSocket
+    fakeComputerUse.triggerHighRiskAction('cu-apr-1', 'computer_mouse_action', 'Full-screen click');
+    const cuCard1 = (await collector.waitFor(
+      (f) => f.type === 'approval_request' && (f as { callId?: string }).callId === 'cu-apr-1',
+    )) as { approvalId: string; callId: string };
+    const cuNormErr = (await collector.waitFor(
+      (f) => f.type === 'normalized_error' && (f as { error: { code: string } }).error.code === 'CC-TOOL-4002',
+    )) as { error: { code: string; recoveryAction: string } };
+    expect(cuNormErr.error.recoveryAction).toBe('AWAIT_APPROVAL');
+    expect(executedDesktopActions).toEqual([]);
+
+    // Approve cu-apr-1 over WebSocket -> executes the held desktop action
+    ws.send(JSON.stringify({ type: 'approve', approvalId: cuCard1.approvalId }));
+    const cuResult1 = (await collector.waitFor(
+      (f) => f.type === 'tool_call_result' && (f as { callId: string }).callId === 'cu-apr-1',
+    )) as { isError?: boolean; output: string };
+    expect(cuResult1.isError).toBe(false);
+    expect(executedDesktopActions).toEqual(['cu-apr-1']);
+
+    // Reject cu-apr-2 over WebSocket -> discards the held desktop action
+    fakeComputerUse.triggerHighRiskAction('cu-apr-2', 'computer_keyboard_action', 'Alt+Tab denied');
+    const cuCard2 = (await collector.waitFor(
+      (f) => f.type === 'approval_request' && (f as { callId?: string }).callId === 'cu-apr-2',
+    )) as { approvalId: string };
+    ws.send(JSON.stringify({ type: 'reject', approvalId: cuCard2.approvalId }));
+    const cuResult2 = (await collector.waitFor(
+      (f) => f.type === 'tool_call_result' && (f as { callId: string }).callId === 'cu-apr-2',
+    )) as { isError?: boolean; output: string };
+    expect(cuResult2.isError).toBe(true);
+    expect(cuResult2.output).toContain('CC-TOOL-4002');
+    expect(executedDesktopActions).toEqual(['cu-apr-1']);
+
     ws.close();
   });
 });

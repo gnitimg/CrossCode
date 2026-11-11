@@ -5,7 +5,7 @@
  * default, any SDK transport works):
  * - 6 built-in browser tools   (`browser_builtin_*`)
  * - 3 external browser tools   (`browser_external_*`)
- * - 5 computer use tools       (`computer_*`)
+ * - 7 computer use tools       (`computer_*`)
  * - 2 skills tools             (`skills_list`, `skills_prompt_injection_block`)
  *
  * Every backing service (browser pool, external bridge, PowerShell executor,
@@ -113,6 +113,8 @@ export const COMPUTER_USE_TOOL_NAMES = [
   'computer_keyboard_action',
   'computer_window_list',
   'computer_window_focus',
+  'computer_list_pending_approvals',
+  'computer_resolve_approval',
 ] as const;
 
 export const SKILLS_TOOL_NAMES = ['skills_list', 'skills_prompt_injection_block'] as const;
@@ -182,6 +184,14 @@ function optionalString(args: Record<string, unknown>, key: string): string | un
   }
   if (typeof value !== 'string') {
     throw new Error(`Argument ${key} must be a string`);
+  }
+  return value;
+}
+
+function requireBoolean(args: Record<string, unknown>, key: string): boolean {
+  const value = args[key];
+  if (typeof value !== 'boolean') {
+    throw new Error(`Missing required boolean argument: ${key}`);
   }
   return value;
 }
@@ -483,6 +493,56 @@ export function createComputerUseTools(computerUse: ComputerUseWin32): UnifiedTo
         return jsonResult({ ...result });
       },
     },
+    {
+      name: 'computer_list_pending_approvals',
+      description:
+        'List pending Windows desktop actions awaiting human approval (CC-TOOL-4002 safety gate).',
+      inputSchema: { type: 'object', properties: {} },
+      handler: async () => {
+        const approvals = computerUse.listPendingApprovals();
+        return jsonResult(
+          { approvals },
+          `${approvals.length} pending approval(s).`,
+        );
+      },
+    },
+    {
+      name: 'computer_resolve_approval',
+      description:
+        'Approve (and execute) or reject (and discard) a pending Windows desktop action held by the CC-TOOL-4002 safety gate.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          approvalId: {
+            type: 'string',
+            description: 'Approval ID returned by a CC-TOOL-4002 safety gate hit',
+          },
+          approved: {
+            type: 'boolean',
+            description: 'true = approve and execute the held action; false = reject and discard',
+          },
+          reason: {
+            type: 'string',
+            description: 'Optional rejection reason when approved is false',
+          },
+        },
+        required: ['approvalId', 'approved'],
+      },
+      handler: async (args) => {
+        const approvalId = requireString(args, 'approvalId');
+        const approved = requireBoolean(args, 'approved');
+        const reason = optionalString(args, 'reason');
+        const decision = approved
+          ? await computerUse.approve(approvalId)
+          : computerUse.reject(approvalId, reason);
+        return jsonResult(
+          { ...decision },
+          approved
+            ? `Approved and executed pending action ${approvalId}.`
+            : `Rejected pending action ${approvalId}: ${decision.reason ?? 'rejected by operator'}.`,
+        );
+      },
+    },
   ];
 }
 
@@ -556,6 +616,8 @@ export interface UnifiedMcpServer {
   readonly name: string;
   readonly version: string;
   readonly underlyingServer: Server;
+  /** Underlying Windows computer-use controller when the default toolset is active. */
+  readonly computerUse?: ComputerUseWin32;
   /** Registered tool definitions in registration order. */
   listTools(): UnifiedToolDefinition[];
   getTool(name: string): UnifiedToolDefinition | undefined;
@@ -569,8 +631,12 @@ export function createUnifiedMcpServer(options: UnifiedMcpServerOptions = {}): U
   const version = options.version ?? '0.1.0';
 
   let tools: UnifiedToolDefinition[];
+  let computerUseInstance: ComputerUseWin32 | undefined;
   if (options.tools) {
     tools = [...options.tools, ...(options.extraTools ?? [])];
+    if (options.computerUse instanceof ComputerUseWin32) {
+      computerUseInstance = options.computerUse;
+    }
   } else {
     const builtinBrowser =
       options.builtinBrowser instanceof BuiltinBrowser
@@ -584,6 +650,7 @@ export function createUnifiedMcpServer(options: UnifiedMcpServerOptions = {}): U
       options.computerUse instanceof ComputerUseWin32
         ? options.computerUse
         : new ComputerUseWin32(options.computerUse);
+    computerUseInstance = computerUse;
     const skills =
       options.skills instanceof SkillVirtualizer
         ? options.skills
@@ -638,6 +705,7 @@ export function createUnifiedMcpServer(options: UnifiedMcpServerOptions = {}): U
     name,
     version,
     underlyingServer: server,
+    computerUse: computerUseInstance,
     listTools(): UnifiedToolDefinition[] {
       return [...tools];
     },

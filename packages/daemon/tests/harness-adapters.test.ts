@@ -604,6 +604,86 @@ describe('Task 6: Harness Adapters & CrossCodeNativeHarness', () => {
       expect(results[3].output).toContain('crosscode-safe');
     });
 
+    it('enforceApprovalGate blocks run_shell until resolveToolApproval(callId, true/false) or abort()', async () => {
+      const project = path.join(tempRoot, 'native-approval-gate');
+      await fs.mkdir(project, { recursive: true });
+      const approvedMarker = path.join(project, 'approved-marker.txt');
+      const rejectedMarker = path.join(project, 'rejected-marker.txt');
+
+      const { client } = scriptedLLM([
+        {
+          toolCalls: [
+            {
+              id: 'call-approve-1',
+              name: 'run_shell',
+              arguments: { command: 'node -e "require(\'fs\').writeFileSync(\'approved-marker.txt\', \'ok\')"' },
+            },
+          ],
+        },
+        {
+          toolCalls: [
+            {
+              id: 'call-reject-2',
+              name: 'run_shell',
+              arguments: { command: 'node -e "require(\'fs\').writeFileSync(\'rejected-marker.txt\', \'bad\')"' },
+            },
+          ],
+        },
+        { text: 'Approval loop finished.' },
+      ]);
+
+      const harness = new CrossCodeNativeHarness({
+        projectPath: project,
+        mode: 'build',
+        llmClient: client,
+        enforceApprovalGate: true,
+      });
+      const events = collectEvents(harness);
+
+      const runPromise = harness.start('Test blocking approval gate');
+
+      // Wait until the first run_shell call is pending approval
+      const waitUntilPending = async (expectedCallId: string): Promise<void> => {
+        const deadline = Date.now() + 4000;
+        while (Date.now() < deadline) {
+          const pending = harness.listPendingToolApprovals();
+          if (pending.some((p) => p.callId === expectedCallId)) return;
+          await new Promise((r) => setTimeout(r, 15));
+        }
+        throw new Error(`Timed out waiting for pending tool approval ${expectedCallId}`);
+      };
+
+      await waitUntilPending('call-approve-1');
+      // Command must NOT have executed before approval
+      await expect(fs.access(approvedMarker)).rejects.toThrow();
+      expect(eventsOfType(events, 'tool_call_result')).toHaveLength(0);
+
+      // Approve the first call -> it executes and creates approved-marker.txt
+      expect(harness.resolveToolApproval('call-approve-1', true)).toBe(true);
+
+      // Wait until the second run_shell call is pending approval
+      await waitUntilPending('call-reject-2');
+      expect(await fs.readFile(approvedMarker, 'utf8')).toBe('ok');
+      await expect(fs.access(rejectedMarker)).rejects.toThrow();
+
+      // Reject the second call -> it must NOT execute, and emits CC-TOOL-4002 error result
+      expect(harness.resolveToolApproval('call-reject-2', false)).toBe(true);
+
+      await runPromise;
+
+      await expect(fs.access(rejectedMarker)).rejects.toThrow();
+      const results = eventsOfType(events, 'tool_call_result');
+      expect(results).toHaveLength(2);
+      expect(results[0].callId).toBe('call-approve-1');
+      expect(results[0].isError).toBe(false);
+      expect(results[1].callId).toBe('call-reject-2');
+      expect(results[1].isError).toBe(true);
+      expect(results[1].output).toContain('CC-TOOL-4002');
+
+      const workspace = await readAgentWorkspaceContext(project);
+      expect(workspace.errorLogs.some((e) => e.code === 'CC-TOOL-4002')).toBe(true);
+    });
+
     it('refuses file tools that escape the project root through a symlink/junction', async () => {
       const project = path.join(tempRoot, 'native-symlink');
       await fs.mkdir(path.join(project, 'real'), { recursive: true });

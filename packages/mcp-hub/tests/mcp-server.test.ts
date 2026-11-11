@@ -228,10 +228,10 @@ describe('Task 5: unified MCP server', () => {
     return { factory, executor, computerUse, bridge, server };
   }
 
-  it('registers the full tool catalog: 6 builtin browser + 3 external browser + 5 computer use + 2 skills', () => {
+  it('registers the full tool catalog: 6 builtin browser + 3 external browser + 7 computer use + 2 skills', () => {
     const { server } = buildFixture();
     const names = server.listTools().map((tool) => tool.name);
-    expect(names).toHaveLength(16);
+    expect(names).toHaveLength(18);
     expect(names).toEqual([
       ...BUILTIN_BROWSER_TOOL_NAMES,
       ...EXTERNAL_BROWSER_TOOL_NAMES,
@@ -251,33 +251,37 @@ describe('Task 5: unified MCP server', () => {
       'browser_external_activate_tab',
       'browser_external_exec_action',
     ]);
-    expect(names.slice(9, 14)).toEqual([
+    expect(names.slice(9, 16)).toEqual([
       'computer_screenshot',
       'computer_mouse_action',
       'computer_keyboard_action',
       'computer_window_list',
       'computer_window_focus',
+      'computer_list_pending_approvals',
+      'computer_resolve_approval',
     ]);
-    expect(names.slice(14)).toEqual(['skills_list', 'skills_prompt_injection_block']);
+    expect(names.slice(16)).toEqual(['skills_list', 'skills_prompt_injection_block']);
     // Every tool declares a JSON-schema input contract
     for (const tool of server.listTools()) {
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.description.length).toBeGreaterThan(10);
     }
     expect(server.getTool('skills_list')).toBeDefined();
+    expect(server.getTool('computer_list_pending_approvals')).toBeDefined();
+    expect(server.getTool('computer_resolve_approval')).toBeDefined();
     expect(server.getTool('nope')).toBeUndefined();
   });
 
   it('serves listTools and callTool over the real MCP protocol (in-memory transport)', async () => {
     await writeSkill(path.join(ssotRoot, 'deploy-aws'), 'deploy-aws', 'Deploy services to AWS ECS.');
-    const { server, factory } = buildFixture();
+    const { server, factory, executor } = buildFixture();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'vitest-client', version: '0.0.0' });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
     const listed = await client.listTools();
-    expect(listed.tools.map((tool) => tool.name)).toHaveLength(16);
+    expect(listed.tools.map((tool) => tool.name)).toHaveLength(18);
 
     // builtin snapshot through the protocol
     const openResult = await client.callTool({
@@ -319,7 +323,9 @@ describe('Task 5: unified MCP server', () => {
     expect(blockText).toContain('crosscode:skills-injection BEGIN');
     expect(blockText).toContain('crosscode:skills-injection END');
 
-    // Safety gate surfaces CC-TOOL-4002 through the protocol too
+    // Safety gate surfaces CC-TOOL-4002 through the protocol too, and can be
+    // listed and resolved (approve/reject) over MCP tools.
+    executor.queueMarked('__CC_MOUSE_OK__', { performed: 'left_click' });
     const approval = await client.callTool({
       name: 'computer_mouse_action',
       arguments: { action: 'left_click' },
@@ -329,6 +335,53 @@ describe('Task 5: unified MCP server', () => {
     expect(approvalPayload.code).toBe('CC-TOOL-4002');
     expect(approvalPayload.recoveryAction).toBe('AWAIT_APPROVAL');
     expect(typeof approvalPayload.approvalId).toBe('string');
+    expect(executor.scripts).toHaveLength(0);
+
+    const pendingList = await client.callTool({
+      name: 'computer_list_pending_approvals',
+      arguments: {},
+    });
+    const pendingListPayload = (pendingList.structuredContent ?? {}) as {
+      approvals?: Array<{ approvalId: string; toolName: string }>;
+    };
+    expect(pendingListPayload.approvals).toHaveLength(1);
+    expect(pendingListPayload.approvals?.[0].approvalId).toBe(approvalPayload.approvalId);
+
+    const resolvedApprove = await client.callTool({
+      name: 'computer_resolve_approval',
+      arguments: { approvalId: String(approvalPayload.approvalId), approved: true },
+    });
+    expect(resolvedApprove.isError).toBeUndefined();
+    expect(resolvedApprove.structuredContent).toMatchObject({
+      approvalId: approvalPayload.approvalId,
+      approved: true,
+      executed: true,
+      result: { performed: 'left_click' },
+    });
+    expect(executor.scripts).toHaveLength(1);
+
+    // Second high-risk action rejected via computer_resolve_approval
+    const approval2 = await client.callTool({
+      name: 'computer_keyboard_action',
+      arguments: { action: 'hotkey', keys: 'Alt+Tab' },
+    });
+    const approvalPayload2 = (approval2.structuredContent ?? {}) as Record<string, unknown>;
+    const resolvedReject = await client.callTool({
+      name: 'computer_resolve_approval',
+      arguments: {
+        approvalId: String(approvalPayload2.approvalId),
+        approved: false,
+        reason: 'denied by remote operator',
+      },
+    });
+    expect(resolvedReject.isError).toBeUndefined();
+    expect(resolvedReject.structuredContent).toMatchObject({
+      approvalId: approvalPayload2.approvalId,
+      approved: false,
+      executed: false,
+      reason: 'denied by remote operator',
+    });
+    expect(executor.scripts).toHaveLength(1);
 
     await Promise.all([client.close(), server.underlyingServer.close()]);
   });
@@ -384,7 +437,7 @@ describe('Task 5: unified MCP server', () => {
     const customServer = createUnifiedMcpServer(custom);
     expect(customServer.listTools().map((tool) => tool.name)).toEqual(['echo', 'ping']);
     // the default fixture server still exposes the standard catalog
-    expect(defaultServer.listTools()).toHaveLength(16);
+    expect(defaultServer.listTools()).toHaveLength(18);
   });
 });
 
@@ -1207,6 +1260,35 @@ describe('Task 5: computer use win32 (fake PowerShell executor, safety gate)', (
   it('default executor is created automatically when none is injected', () => {
     const cu = new ComputerUseWin32();
     expect(cu.listPendingApprovals()).toEqual([]);
+  });
+
+  it('invokes onApprovalRequested and onApprovalRequest listeners when the safety gate hits', async () => {
+    const executor = new FakePowerShellExecutor();
+    const seenViaOption: Array<{ approvalId: string; toolName: string; originalAction: Record<string, unknown> }> = [];
+    const seenViaSub: Array<{ approvalId: string; toolName: string; originalAction: Record<string, unknown> }> = [];
+    const cu = new ComputerUseWin32({
+      executor,
+      onApprovalRequested: (approval) => {
+        seenViaOption.push(approval);
+      },
+    });
+    const unsub = cu.onApprovalRequest((approval) => {
+      seenViaSub.push(approval);
+    });
+
+    const res = await cu.mouseAction({ action: 'left_click' });
+    const held = res as Extract<typeof res, { status: 'approval_required' }>;
+    expect(seenViaOption).toHaveLength(1);
+    expect(seenViaOption[0].approvalId).toBe(held.approvalId);
+    expect(seenViaOption[0].toolName).toBe('computer_mouse_action');
+    expect(seenViaOption[0].originalAction).toEqual({ action: 'left_click' });
+    expect(seenViaSub).toHaveLength(1);
+    expect(seenViaSub[0].approvalId).toBe(held.approvalId);
+
+    unsub();
+    await cu.keyboardAction({ action: 'hotkey', keys: 'Alt+Tab' });
+    expect(seenViaOption).toHaveLength(2);
+    expect(seenViaSub).toHaveLength(1);
   });
 });
 

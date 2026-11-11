@@ -226,6 +226,11 @@ export interface ComputerUseOptions {
   pendingApprovalTtlMs?: number;
   /** Maximum number of simultaneously pending approvals; the oldest is evicted. Default 100. */
   maxPendingApprovals?: number;
+  /**
+   * Optional hook invoked synchronously whenever a high-risk desktop action
+   * hits the CC-TOOL-4002 safety gate and is stored as a pending approval.
+   */
+  onApprovalRequested?: (approval: PendingApproval) => void;
 }
 
 const SCREEN_MARKER = '__CC_SCREEN_JSON__';
@@ -258,9 +263,13 @@ export class ComputerUseWin32 {
     string,
     { record: PendingApproval; run: () => Promise<unknown> }
   >();
+  private readonly approvalListeners = new Set<(approval: PendingApproval) => void>();
 
   constructor(options: ComputerUseOptions = {}) {
     this.executor = options.executor ?? createDefaultPowerShellExecutor();
+    if (options.onApprovalRequested) {
+      this.approvalListeners.add(options.onApprovalRequested);
+    }
     const cfg = options.safetyPolicy ?? {};
     this.policy = {
       blockFullScreenClicks: cfg.blockFullScreenClicks ?? true,
@@ -298,6 +307,18 @@ export class ComputerUseWin32 {
       }
       this.pendingApprovals.delete(oldest.value);
     }
+  }
+
+  /**
+   * Subscribe to newly created CC-TOOL-4002 pending approvals. Returns an
+   * unsubscribe function so gateways/session managers can bridge desktop
+   * safety-gate hits to remote approval clients.
+   */
+  onApprovalRequest(listener: (approval: PendingApproval) => void): () => void {
+    this.approvalListeners.add(listener);
+    return () => {
+      this.approvalListeners.delete(listener);
+    };
   }
 
   listPendingApprovals(): PendingApproval[] {
@@ -356,6 +377,12 @@ export class ComputerUseWin32 {
       createdAt: new Date().toISOString(),
     };
     this.pendingApprovals.set(approvalId, { record, run });
+    for (const listener of this.approvalListeners) {
+      listener({
+        ...record,
+        originalAction: { ...record.originalAction },
+      });
+    }
     return {
       status: 'approval_required',
       code: 'CC-TOOL-4002',

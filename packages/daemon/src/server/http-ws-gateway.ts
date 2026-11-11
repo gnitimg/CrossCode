@@ -122,7 +122,11 @@ export interface GatewaySession {
   /** Stream of UnifiedStreamEvents produced by the underlying harness. */
   subscribe(listener: (event: UnifiedStreamEvent) => void): () => void;
   /** Called when a pending approval raised on this session is resolved. */
-  handleApproval(approvalId: string, approved: boolean): void;
+  handleApproval(
+    approvalId: string,
+    approved: boolean,
+    record?: PendingApprovalRecord,
+  ): void | Promise<void>;
   /** Client actions other than approve/reject (those stay in the gateway). */
   handleAction(action: SessionClientAction): void | Promise<void>;
   /** Optional cleanup hook fired when the websocket disconnects. */
@@ -736,8 +740,12 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
         // for tool calls that require user approval.
         send(event);
         if (event.type === 'tool_call_start' && event.requiresApproval) {
+          const explicitApprovalId =
+            typeof event.args?.approvalId === 'string' && event.args.approvalId.length > 0
+              ? event.args.approvalId
+              : `apr_${randomUUID()}`;
           const record: PendingApprovalRecord = {
-            approvalId: `apr_${randomUUID()}`,
+            approvalId: explicitApprovalId,
             sessionId: event.sessionId,
             callId: event.callId,
             toolName: event.toolName,
@@ -745,7 +753,12 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
             createdAt: new Date().toISOString(),
           };
           pendingApprovals.register(record, (approved) => {
-            activeSession.handleApproval(record.approvalId, approved);
+            const maybePromise = activeSession.handleApproval(record.approvalId, approved, record);
+            if (maybePromise && typeof (maybePromise as Promise<void>).catch === 'function') {
+              (maybePromise as Promise<void>).catch((error: Error) => {
+                send({ type: 'error', message: error.message });
+              });
+            }
           });
           send({ type: 'approval_request', ...record });
         }

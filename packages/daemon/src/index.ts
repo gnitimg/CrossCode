@@ -2,6 +2,7 @@ export * from './workspace/agent-workspace.js';
 export * from './scanner/project-scanner.js';
 export * from './providers/provider-switchboard.js';
 export * from './server/http-ws-gateway.js';
+export * from './server/daemon-session-manager.js';
 export * from './harnesses/base-adapter.js';
 export * from './harnesses/crosscode-native-harness.js';
 export * from './harnesses/opencode-adapter.js';
