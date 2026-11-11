@@ -1,0 +1,181 @@
+import {
+  Check,
+  FolderGit2,
+  MessagesSquare,
+  PanelRight,
+  SlidersHorizontal,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
+import { ALL_HARNESS_IDS } from '@crosscode/shared';
+import type { AgentMode } from '@crosscode/shared';
+import { useWorkbenchStore } from '../store/workbench';
+import { HARNESS_META, providerColor } from '../lib/harness';
+import { cn } from '../lib/cn';
+
+/**
+ * Mobile (<768px) adaptation: a thumb-reach bottom navigation bar switching
+ * between the three panes, plus a slide-up drawer holding the harness /
+ * provider / mode switchers that live in the top bar on desktop.
+ */
+
+const MOBILE_TABS: ReadonlyArray<{ id: 'projects' | 'stream' | 'inspector'; label: string; icon: LucideIcon }> = [
+  { id: 'projects', label: '项目', icon: FolderGit2 },
+  { id: 'stream', label: '会话', icon: MessagesSquare },
+  { id: 'inspector', label: '检视', icon: PanelRight },
+];
+
+const DRAWER_MODES: ReadonlyArray<{ id: AgentMode; label: string }> = [
+  { id: 'plan', label: '规划 plan' },
+  { id: 'build', label: '构建 build' },
+  { id: 'orchestrate', label: '编排 orchestrate' },
+];
+
+function SwitchboardDrawer() {
+  const close = () => useWorkbenchStore.getState().setSwitchboardDrawerOpen(false);
+  const projects = useWorkbenchStore((state) => state.projects);
+  const activeProjectId = useWorkbenchStore((state) => state.activeProjectId);
+  const activeHarness = projects.find((project) => project.id === activeProjectId)?.activeHarness ?? 'crosscode-native';
+  const activeProviderId = projects.find((project) => project.id === activeProjectId)?.activeProviderId ?? null;
+  const providers = useWorkbenchStore((state) => state.providers);
+  const agentMode = useWorkbenchStore((state) => state.agentMode);
+  const switchHarness = useWorkbenchStore((state) => state.switchHarness);
+  const switchProvider = useWorkbenchStore((state) => state.switchProvider);
+  const setAgentMode = useWorkbenchStore((state) => state.setAgentMode);
+
+  return (
+    <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-label="切换器抽屉">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={close} />
+      <div className="drawer-up panel !rounded-t-2xl absolute inset-x-0 bottom-0 max-h-[76vh] overflow-y-auto stream-scroll rounded-b-none p-4 pb-10">
+        <div className="mb-3 flex items-center">
+          <span className="text-[13px] font-semibold text-slate-100">切换器</span>
+          <button type="button" className="btn btn-ghost ml-auto !h-7 !w-7 !p-0" onClick={close} aria-label="关闭抽屉">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="mb-4">
+          <div className="mb-1.5 text-[10px] uppercase tracking-wider text-slate-600">模式</div>
+          <div className="flex gap-1.5">
+            {DRAWER_MODES.map((mode) => (
+              <button
+                key={mode.id}
+                type="button"
+                aria-pressed={agentMode === mode.id}
+                onClick={() => setAgentMode(mode.id)}
+                className={cn('btn btn-ghost flex-1', agentMode === mode.id && 'bg-aurora/25 text-white')}
+              >
+                {mode.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mb-4">
+          <div className="mb-1.5 text-[10px] uppercase tracking-wider text-slate-600">Harness</div>
+          <div className="grid grid-cols-2 gap-1.5">
+            {ALL_HARNESS_IDS.map((harnessId) => {
+              const meta = HARNESS_META[harnessId];
+              const active = harnessId === activeHarness;
+              return (
+                <button
+                  key={harnessId}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => void switchHarness(harnessId)}
+                  className={cn(
+                    'btn btn-ghost justify-start',
+                    active && 'border-aurora/40 bg-aurora/[0.12] text-slate-100',
+                  )}
+                >
+                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: meta.color, color: meta.color }} />
+                  {meta.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <div className="mb-1.5 text-[10px] uppercase tracking-wider text-slate-600">Provider</div>
+          <div className="flex flex-col gap-1">
+            {providers.map((provider) => {
+              const active = provider.id === activeProviderId;
+              return (
+                <button
+                  key={provider.id}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => void switchProvider(provider.id)}
+                  className={cn(
+                    'btn btn-ghost !h-8 justify-start',
+                    active && 'border-aurora/40 bg-aurora/[0.12] text-slate-100',
+                  )}
+                >
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: providerColor(provider.id), color: providerColor(provider.id) }}
+                  />
+                  <span className="truncate">{provider.label}</span>
+                  {active && <Check className="ml-auto h-3.5 w-3.5 text-aurora" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function MobileNav() {
+  const pane = useWorkbenchStore((state) => state.mobilePane);
+  const setPane = useWorkbenchStore((state) => state.setMobilePane);
+  const drawerOpen = useWorkbenchStore((state) => state.switchboardDrawerOpen);
+  const setDrawer = useWorkbenchStore((state) => state.setSwitchboardDrawerOpen);
+
+  return (
+    <>
+      <nav
+        className="fixed inset-x-0 bottom-0 z-40 flex h-14 items-stretch border-t hairline bg-panel/95 backdrop-blur md:hidden"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+        aria-label="移动端导航"
+      >
+        {MOBILE_TABS.map((tab) => {
+          const active = pane === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              aria-pressed={active}
+              onClick={() => {
+                setPane(tab.id);
+                setDrawer(false);
+              }}
+              className={cn(
+                'flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] transition',
+                active ? 'text-aurora' : 'text-slate-500 hover:text-slate-300',
+              )}
+            >
+              <tab.icon className="h-[18px] w-[18px]" />
+              {tab.label}
+            </button>
+          );
+        })}
+        <button
+          type="button"
+          aria-pressed={drawerOpen}
+          onClick={() => setDrawer(!drawerOpen)}
+          className={cn(
+            'flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] transition',
+            drawerOpen ? 'text-aurora' : 'text-slate-500 hover:text-slate-300',
+          )}
+        >
+          <SlidersHorizontal className="h-[18px] w-[18px]" />
+          切换
+        </button>
+      </nav>
+      {drawerOpen && <SwitchboardDrawer />}
+    </>
+  );
+}

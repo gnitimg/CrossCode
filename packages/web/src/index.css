@@ -1,0 +1,262 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+ * CrossCode design tokens ("深邃曜石黑" design language)
+ * Tailwind v4 @theme — every token here also emits a CSS variable so custom
+ * rules below can reference the same values.
+ * ------------------------------------------------------------------------- */
+@theme {
+  --color-obsidian: #090a0f;
+  --color-panel: #11131c;
+  --color-raised: #181b28;
+  --color-aurora: #8b5cf6;
+  --color-ember: #d97757;
+  --color-glacier: #22d3ee;
+  --color-jade: #10b981;
+  --color-abyss: #3b82f6;
+  --color-rosefire: #f43f5e;
+  --color-solar: #f59e0b;
+
+  --font-sans: "Inter", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace;
+}
+
+:root {
+  --hairline: rgba(255, 255, 255, 0.07);
+  --hairline-strong: rgba(255, 255, 255, 0.14);
+  --inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background-color: var(--color-obsidian);
+  color: #e2e8f0;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(139, 92, 246, 0.35);
+}
+
+.hairline {
+  border-color: var(--hairline);
+}
+
+/* Aurora ambience: faint brand-colored glows floating above the obsidian base */
+.app-aurora::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(1100px 520px at 8% -8%, rgba(139, 92, 246, 0.09), transparent 60%),
+    radial-gradient(900px 480px at 105% 108%, rgba(34, 211, 238, 0.07), transparent 55%),
+    radial-gradient(700px 380px at 55% 120%, rgba(217, 119, 87, 0.05), transparent 60%);
+}
+
+/* Glass panel: 1px hairline border + inner top highlight + deep drop shadow */
+.panel {
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0) 38%),
+    var(--color-panel);
+  box-shadow: var(--inset-highlight), 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 9999px;
+  border: 1px solid var(--hairline);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 11px;
+  line-height: 1;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 5px;
+  border: 1px solid var(--hairline-strong);
+  background: rgba(255, 255, 255, 0.05);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+/* --- buttons ------------------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font-size: 12px;
+  color: #cbd5e1;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.08s ease,
+    box-shadow 0.15s ease,
+    color 0.15s ease;
+}
+.btn:active {
+  transform: scale(0.97);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+.btn-ghost {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--hairline);
+}
+.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #e2e8f0;
+}
+.btn-primary {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.92), rgba(99, 64, 218, 0.92));
+  color: #fff;
+  box-shadow: 0 2px 14px rgba(139, 92, 246, 0.35), var(--inset-highlight);
+}
+.btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 1), rgba(109, 74, 230, 1));
+}
+.btn-jade {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.35);
+  color: #6ee7b7;
+}
+.btn-jade:hover {
+  background: rgba(16, 185, 129, 0.22);
+}
+.btn-danger {
+  background: rgba(244, 63, 94, 0.12);
+  border-color: rgba(244, 63, 94, 0.35);
+  color: #fda4af;
+}
+.btn-danger:hover {
+  background: rgba(244, 63, 94, 0.2);
+}
+.btn-amber {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #fcd34d;
+}
+.btn-amber:hover {
+  background: rgba(245, 158, 11, 0.24);
+}
+
+/* --- motion -------------------------------------------------------------- */
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+    box-shadow: 0 0 3px currentColor;
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 9px currentColor;
+  }
+}
+.breathe {
+  animation: breathe 2.2s ease-in-out infinite;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.rise {
+  animation: rise 0.22s ease-out both;
+}
+
+@keyframes drawer-up {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.drawer-up {
+  animation: drawer-up 0.2s ease-out both;
+}
+
+/* --- scrollbars ----------------------------------------------------------- */
+.stream-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+.stream-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.stream-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+}
+.stream-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+.stream-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* --- misc ----------------------------------------------------------------- */
+:focus-visible {
+  outline: 2px solid rgba(139, 92, 246, 0.55);
+  outline-offset: 1px;
+  border-radius: 6px;
+}
+
+input,
+textarea,
+button {
+  font-family: inherit;
+}
+input::placeholder,
+textarea::placeholder {
+  color: #475569;
+}
+
+details > summary {
+  list-style: none;
+}
+details > summary::-webkit-details-marker {
+  display: none;
+}
