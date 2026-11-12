@@ -5,11 +5,6 @@ import type { ApprovalCard } from '../store/model';
 import { isVisualTool, toolVisual, truncate } from '../lib/tool-meta';
 import { cn } from '../lib/cn';
 
-/**
- * One tool invocation in the unified stream: argument summary chips, a
- * browser/desktop thumbnail placeholder, result preview — and the high-risk
- * Approve/Reject card when the gateway raised a pending approval.
- */
 export function ToolCallStepCard({ item }: { item: TimelineToolStep }) {
   const approval = useWorkbenchStore((state) => state.approvals.find((card) => card.callId === item.callId));
   const respondApproval = useWorkbenchStore((state) => state.respondApproval);
@@ -22,31 +17,33 @@ export function ToolCallStepCard({ item }: { item: TimelineToolStep }) {
   return (
     <div
       className={cn(
-        'rise overflow-hidden rounded-xl border bg-panel/70',
-        item.status === 'error' ? 'border-rosefire/35' : item.status === 'running' ? 'border-glacier/30' : 'hairline',
+        'overflow-hidden rounded border bg-panel',
+        item.status === 'error'
+          ? 'border-rose-500/35'
+          : approval
+            ? 'border-amber-500/40'
+            : 'hairline',
       )}
     >
-      <div className="flex items-center gap-2 px-3 py-2">
-        <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-white/[0.06]" style={{ color: visual.color }}>
-          <Icon className="h-3.5 w-3.5" />
-        </span>
-        <span className="truncate font-mono text-[12px] text-slate-200" title={item.toolName}>
+      <div className="flex items-center gap-2 px-2.5 py-1.5 font-mono text-[11.5px]">
+        <Icon className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
+        <span className="truncate font-medium text-zinc-200" title={item.toolName}>
           {item.toolName}
         </span>
-        <span className="chip hidden font-mono !text-[10px] text-slate-600 sm:inline-flex">{item.callId.slice(0, 8)}</span>
-        <span className="ml-auto shrink-0">
+        <span className="hidden text-[10px] text-zinc-600 sm:inline">{item.callId.slice(0, 8)}</span>
+        <span className="ml-auto shrink-0 text-[10.5px]">
           {item.status === 'running' ? (
-            <span className="chip border-glacier/30 bg-glacier/10 text-glacier">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-glacier" />
+            <span className="inline-flex items-center gap-1.5 text-sky-400">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />
               执行中
             </span>
           ) : item.status === 'ok' ? (
-            <span className="chip border-jade/30 bg-jade/10 text-jade">
+            <span className="inline-flex items-center gap-1 text-emerald-400">
               <Check className="h-3 w-3" />
               完成
             </span>
           ) : (
-            <span className="chip border-rosefire/30 bg-rosefire/10 text-rosefire">
+            <span className="inline-flex items-center gap-1 text-rose-400">
               <X className="h-3 w-3" />
               失败
             </span>
@@ -55,39 +52,43 @@ export function ToolCallStepCard({ item }: { item: TimelineToolStep }) {
       </div>
 
       {argEntries.length > 0 && (
-        <div className="flex flex-wrap gap-1 px-3 pb-2">
+        <div className="flex flex-wrap gap-1 border-t hairline bg-obsidian/40 px-2.5 py-1.5">
           {argEntries.map(([key, value]) => (
-            <span key={key} className="chip max-w-[260px] font-mono !text-[10.5px] text-slate-400" title={`${key}: ${String(value)}`}>
-              {key}: {truncate(String(value), 42)}
+            <span
+              key={key}
+              className="chip max-w-[280px] !text-[10.5px] text-zinc-400"
+              title={`${key}: ${String(value)}`}
+            >
+              {key}: {truncate(String(value), 48)}
             </span>
           ))}
         </div>
       )}
 
       {isVisualTool(visual.kind) && (
-        <div className="px-3 pb-2">
+        <div className="border-t hairline px-2.5 py-2">
           {item.previewImageBase64 ? (
             <img
               src={`data:image/png;base64,${item.previewImageBase64}`}
               alt={`${item.toolName} 结果截图`}
-              className="max-h-44 w-full rounded-lg border border-white/[0.06] object-cover"
+              className="max-h-44 w-full rounded border hairline object-cover"
             />
           ) : (
-            <div className="flex aspect-[16/9] max-h-44 w-full flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-white/[0.09] bg-black/30 text-slate-600">
-              <Icon className="h-5 w-5" />
-              <span className="text-[10.5px]">浏览器 / 桌面画面占位 — 等待结果预览</span>
+            <div className="flex h-24 w-full items-center justify-center gap-2 rounded border border-dashed border-zinc-800 bg-obsidian/50 font-mono text-[10.5px] text-zinc-600">
+              <Icon className="h-3.5 w-3.5" />
+              <span>浏览器 / 桌面画面占位 — 等待结果预览</span>
             </div>
           )}
         </div>
       )}
 
       {item.output !== undefined && (
-        <div className="px-3 pb-2">
+        <div className="border-t hairline px-2.5 py-2">
           <pre
             className={cn(
-              'stream-scroll overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/40 p-2.5 font-mono text-[11px] leading-relaxed text-slate-300',
-              item.isError ? 'text-rosefire/90' : '',
-              outputExpanded ? 'max-h-96' : 'max-h-40',
+              'stream-scroll overflow-auto whitespace-pre-wrap rounded bg-obsidian p-2 font-mono text-[11px] leading-relaxed text-zinc-300',
+              item.isError ? 'text-rose-400' : '',
+              outputExpanded ? 'max-h-96' : 'max-h-36',
             )}
           >
             {truncate(item.output, outputExpanded ? 4000 : 400)}
@@ -96,7 +97,7 @@ export function ToolCallStepCard({ item }: { item: TimelineToolStep }) {
             <button
               type="button"
               onClick={() => setOutputExpanded((value) => !value)}
-              className="mt-1 inline-flex items-center gap-1 text-[10.5px] text-slate-500 transition hover:text-slate-300"
+              className="mt-1 inline-flex items-center gap-1 font-mono text-[10.5px] text-zinc-500 transition hover:text-zinc-300"
             >
               <ChevronDown className={cn('h-3 w-3 transition-transform', outputExpanded && 'rotate-180')} />
               {outputExpanded ? '收起输出' : '展开完整输出'}
@@ -118,19 +119,19 @@ function InlineApprovalCard({
   onRespond: (approvalId: string, approved: boolean) => void;
 }) {
   return (
-    <div className="mx-3 mb-3 rounded-lg border border-amber-400/40 bg-amber-400/[0.07] p-2.5">
-      <div className="flex flex-wrap items-center gap-2 text-[12px] text-amber-200">
-        <ShieldAlert className="h-4 w-4 shrink-0" />
+    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-amber-500/30 bg-amber-500/[0.06] px-2.5 py-2">
+      <div className="flex items-center gap-2 text-[12px] text-amber-200">
+        <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-amber-400" />
         <span className="font-medium">高危操作需要审批</span>
-        <span className="chip border-amber-400/30 font-mono text-amber-300">{approval.toolName}</span>
+        <span className="chip border-amber-500/30 text-amber-300">{approval.toolName}</span>
       </div>
-      <div className="mt-2 flex gap-2">
-        <button type="button" className="btn btn-jade" onClick={() => onRespond(approval.approvalId, true)}>
-          <Check className="h-3.5 w-3.5" />
+      <div className="flex items-center gap-1.5">
+        <button type="button" className="btn btn-jade !h-6" onClick={() => onRespond(approval.approvalId, true)}>
+          <Check className="h-3 w-3" />
           批准执行
         </button>
-        <button type="button" className="btn btn-danger" onClick={() => onRespond(approval.approvalId, false)}>
-          <X className="h-3.5 w-3.5" />
+        <button type="button" className="btn btn-danger !h-6" onClick={() => onRespond(approval.approvalId, false)}>
+          <X className="h-3 w-3" />
           拒绝
         </button>
       </div>

@@ -12,18 +12,11 @@ import type { ErrorCategory, RecoveryAction } from '@crosscode/shared';
 import { useWorkbenchStore } from '../store/workbench';
 import { HARNESS_META } from '../lib/harness';
 
-/**
- * Self-heal banner for the newest NormalizedAgentError: CC-XXXX badge, Chinese
- * user title, collapsible raw message, and a one-click recovery button mapped
- * from `recoveryAction` (SWITCH_PROVIDER / SWITCH_HARNESS / COMPACT_CONTEXT /
- * RETRY_BACKOFF / AWAIT_APPROVAL / RESTART_PROCESS).
- */
-
 const CATEGORY_COLORS: Record<ErrorCategory, string> = {
   AUTH: '#f43f5e',
   QUOTA: '#f59e0b',
-  CTX: '#22d3ee',
-  TOOL: '#8b5cf6',
+  CTX: '#38bdf8',
+  TOOL: '#a1a1aa',
   PROC: '#fb7185',
 };
 
@@ -50,35 +43,37 @@ export function ErrorSelfHealBanner() {
   return (
     <div
       role="alert"
-      className="rise relative z-20 mx-3 mt-2 flex items-start gap-3 rounded-xl border border-amber-400/25 bg-gradient-to-r from-amber-400/[0.08] to-transparent px-3.5 py-2.5"
+      className="relative z-20 flex items-start gap-2.5 border-b border-amber-500/25 bg-amber-500/[0.06] px-3 py-2"
     >
-      <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+      <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="chip border-amber-400/40 bg-amber-400/10 font-mono text-amber-300" style={{ color: categoryColor }}>
+          <span className="chip border-amber-500/30 bg-amber-500/10" style={{ color: categoryColor }}>
             {error.code}
           </span>
-          <span className="text-[13px] font-medium text-slate-100">{error.userTitle}</span>
+          <span className="text-[12.5px] font-medium text-zinc-100">{error.userTitle}</span>
           <span className="chip !text-[10px]">{HARNESS_META[error.harness]?.label ?? error.harness}</span>
           {error.recoveryAction === 'AWAIT_APPROVAL' && approvalCount > 0 && (
-            <span className="chip border-amber-400/30 text-amber-300">{approvalCount} 个待审批</span>
+            <span className="chip border-amber-500/30 text-amber-300">{approvalCount} 个待审批</span>
           )}
         </div>
         <details className="mt-1">
-          <summary className="cursor-pointer text-[11px] text-slate-500 transition hover:text-slate-400">原始报错</summary>
-          <pre className="stream-scroll mt-1 max-h-24 overflow-auto whitespace-pre-wrap rounded-lg bg-black/40 p-2 font-mono text-[10.5px] text-slate-400">
+          <summary className="cursor-pointer font-mono text-[10.5px] text-zinc-500 hover:text-zinc-400">
+            原始报错
+          </summary>
+          <pre className="stream-scroll mt-1 max-h-24 overflow-auto whitespace-pre-wrap rounded bg-black/50 p-2 font-mono text-[10.5px] text-zinc-400">
             {error.rawMessage}
           </pre>
         </details>
       </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <button type="button" className="btn btn-amber" onClick={recover}>
-          <ActionIcon className="h-3.5 w-3.5" />
+      <div className="flex shrink-0 items-center gap-1.5">
+        <button type="button" className="btn btn-amber !h-6" onClick={recover}>
+          <ActionIcon className="h-3 w-3" />
           {action.label}
         </button>
         <button
           type="button"
-          className="btn btn-ghost !h-7 !w-7 !p-0"
+          className="btn btn-ghost !h-6 !w-6 !p-0"
           onClick={() => useWorkbenchStore.setState((state) => ({ errors: state.errors.slice(1) }))}
           aria-label="忽略此错误"
           title="忽略"

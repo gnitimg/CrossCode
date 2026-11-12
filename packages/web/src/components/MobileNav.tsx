@@ -13,12 +13,6 @@ import { useWorkbenchStore } from '../store/workbench';
 import { HARNESS_META, providerColor } from '../lib/harness';
 import { cn } from '../lib/cn';
 
-/**
- * Mobile (<768px) adaptation: a thumb-reach bottom navigation bar switching
- * between the three panes, plus a slide-up drawer holding the harness /
- * provider / mode switchers that live in the top bar on desktop.
- */
-
 const MOBILE_TABS: ReadonlyArray<{ id: 'projects' | 'stream' | 'inspector'; label: string; icon: LucideIcon }> = [
   { id: 'projects', label: '项目', icon: FolderGit2 },
   { id: 'stream', label: '会话', icon: MessagesSquare },
@@ -26,9 +20,9 @@ const MOBILE_TABS: ReadonlyArray<{ id: 'projects' | 'stream' | 'inspector'; labe
 ];
 
 const DRAWER_MODES: ReadonlyArray<{ id: AgentMode; label: string }> = [
-  { id: 'plan', label: '规划 plan' },
-  { id: 'build', label: '构建 build' },
-  { id: 'orchestrate', label: '编排 orchestrate' },
+  { id: 'plan', label: 'Plan' },
+  { id: 'build', label: 'Build' },
+  { id: 'orchestrate', label: 'Orchestrate' },
 ];
 
 function SwitchboardDrawer() {
@@ -45,17 +39,17 @@ function SwitchboardDrawer() {
 
   return (
     <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-label="切换器抽屉">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={close} />
-      <div className="drawer-up panel !rounded-t-2xl absolute inset-x-0 bottom-0 max-h-[76vh] overflow-y-auto stream-scroll rounded-b-none p-4 pb-10">
-        <div className="mb-3 flex items-center">
-          <span className="text-[13px] font-semibold text-slate-100">切换器</span>
-          <button type="button" className="btn btn-ghost ml-auto !h-7 !w-7 !p-0" onClick={close} aria-label="关闭抽屉">
-            <X className="h-4 w-4" />
+      <div className="absolute inset-0 bg-black/70" onClick={close} />
+      <div className="drawer-up panel absolute inset-x-0 bottom-0 max-h-[76vh] overflow-y-auto stream-scroll rounded-b-none p-4 pb-8">
+        <div className="mb-3 flex items-center border-b hairline pb-2">
+          <span className="font-mono text-[12px] font-semibold text-zinc-200">Switchboard</span>
+          <button type="button" className="btn btn-ghost ml-auto !h-6 !w-6 !p-0" onClick={close} aria-label="关闭抽屉">
+            <X className="h-3.5 w-3.5" />
           </button>
         </div>
 
         <div className="mb-4">
-          <div className="mb-1.5 text-[10px] uppercase tracking-wider text-slate-600">模式</div>
+          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-500">Mode</div>
           <div className="flex gap-1.5">
             {DRAWER_MODES.map((mode) => (
               <button
@@ -63,7 +57,10 @@ function SwitchboardDrawer() {
                 type="button"
                 aria-pressed={agentMode === mode.id}
                 onClick={() => setAgentMode(mode.id)}
-                className={cn('btn btn-ghost flex-1', agentMode === mode.id && 'bg-aurora/25 text-white')}
+                className={cn(
+                  'btn flex-1 border hairline font-mono text-[11.5px]',
+                  agentMode === mode.id ? 'bg-zinc-200 text-zinc-950 font-semibold' : 'btn-ghost',
+                )}
               >
                 {mode.label}
               </button>
@@ -72,7 +69,7 @@ function SwitchboardDrawer() {
         </div>
 
         <div className="mb-4">
-          <div className="mb-1.5 text-[10px] uppercase tracking-wider text-slate-600">Harness</div>
+          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-500">Harness</div>
           <div className="grid grid-cols-2 gap-1.5">
             {ALL_HARNESS_IDS.map((harnessId) => {
               const meta = HARNESS_META[harnessId];
@@ -84,11 +81,11 @@ function SwitchboardDrawer() {
                   aria-pressed={active}
                   onClick={() => void switchHarness(harnessId)}
                   className={cn(
-                    'btn btn-ghost justify-start',
-                    active && 'border-aurora/40 bg-aurora/[0.12] text-slate-100',
+                    'btn btn-ghost justify-start border hairline font-mono text-[11.5px]',
+                    active && 'border-zinc-500 bg-white/[0.08] text-zinc-100',
                   )}
                 >
-                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: meta.color, color: meta.color }} />
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: meta.color }} />
                   {meta.label}
                 </button>
               );
@@ -97,7 +94,7 @@ function SwitchboardDrawer() {
         </div>
 
         <div>
-          <div className="mb-1.5 text-[10px] uppercase tracking-wider text-slate-600">Provider</div>
+          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-500">Provider</div>
           <div className="flex flex-col gap-1">
             {providers.map((provider) => {
               const active = provider.id === activeProviderId;
@@ -108,16 +105,16 @@ function SwitchboardDrawer() {
                   aria-pressed={active}
                   onClick={() => void switchProvider(provider.id)}
                   className={cn(
-                    'btn btn-ghost !h-8 justify-start',
-                    active && 'border-aurora/40 bg-aurora/[0.12] text-slate-100',
+                    'btn btn-ghost !h-7 justify-start border hairline font-mono text-[11.5px]',
+                    active && 'border-zinc-500 bg-white/[0.08] text-zinc-100',
                   )}
                 >
                   <span
-                    className="h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: providerColor(provider.id), color: providerColor(provider.id) }}
+                    className="h-1.5 w-1.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: providerColor(provider.id) }}
                   />
                   <span className="truncate">{provider.label}</span>
-                  {active && <Check className="ml-auto h-3.5 w-3.5 text-aurora" />}
+                  {active && <Check className="ml-auto h-3 w-3 text-zinc-200" />}
                 </button>
               );
             })}
@@ -137,7 +134,7 @@ export function MobileNav() {
   return (
     <>
       <nav
-        className="fixed inset-x-0 bottom-0 z-40 flex h-14 items-stretch border-t hairline bg-panel/95 backdrop-blur md:hidden"
+        className="fixed inset-x-0 bottom-0 z-40 flex h-12 items-stretch border-t hairline bg-panel md:hidden"
         style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
         aria-label="移动端导航"
       >
@@ -153,11 +150,11 @@ export function MobileNav() {
                 setDrawer(false);
               }}
               className={cn(
-                'flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] transition',
-                active ? 'text-aurora' : 'text-slate-500 hover:text-slate-300',
+                'flex flex-1 flex-col items-center justify-center gap-0.5 font-mono text-[10px] transition',
+                active ? 'text-zinc-100' : 'text-zinc-500 hover:text-zinc-300',
               )}
             >
-              <tab.icon className="h-[18px] w-[18px]" />
+              <tab.icon className="h-4 w-4" />
               {tab.label}
             </button>
           );
@@ -167,11 +164,11 @@ export function MobileNav() {
           aria-pressed={drawerOpen}
           onClick={() => setDrawer(!drawerOpen)}
           className={cn(
-            'flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] transition',
-            drawerOpen ? 'text-aurora' : 'text-slate-500 hover:text-slate-300',
+            'flex flex-1 flex-col items-center justify-center gap-0.5 font-mono text-[10px] transition',
+            drawerOpen ? 'text-zinc-100' : 'text-zinc-500 hover:text-zinc-300',
           )}
         >
-          <SlidersHorizontal className="h-[18px] w-[18px]" />
+          <SlidersHorizontal className="h-4 w-4" />
           切换
         </button>
       </nav>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Hexagon, Loader2 } from 'lucide-react';
+import { Loader2, Terminal } from 'lucide-react';
 import { useWorkbenchStore } from './store/workbench';
 import { bootWorkbench, submitPairing, watchProjectSwitch } from './lib/bootstrap';
 import { TopSwitchboardBar } from './components/TopSwitchboardBar';
@@ -11,12 +11,6 @@ import { ErrorSelfHealBanner } from './components/ErrorSelfHealBanner';
 import { MobileNav } from './components/MobileNav';
 import { cn } from './lib/cn';
 
-/**
- * Workbench shell. Desktop (>=768px) renders the three-pane IDE layout
- * (project matrix / unified stream / inspector), each collapsible from the top
- * bar; below 768px a single pane follows the mobile nav selection with a
- * bottom thumb bar and switchboard drawer.
- */
 export default function App() {
   const mode = useWorkbenchStore((state) => state.mode);
 
@@ -43,21 +37,15 @@ export default function App() {
 
 function BootScreen() {
   return (
-    <div className="app-aurora relative grid h-dvh place-items-center bg-obsidian text-slate-300">
-      <div className="relative z-10 flex flex-col items-center gap-3">
-        <div className="grid h-14 w-14 place-items-center rounded-2xl border hairline bg-panel">
-          <Hexagon className="breathe h-7 w-7 text-aurora" />
-        </div>
-        <div className="flex items-center gap-2 text-[13px] text-slate-400">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          正在连接守护进程…
-        </div>
+    <div className="grid h-dvh place-items-center bg-obsidian text-zinc-400">
+      <div className="flex items-center gap-2.5 font-mono text-[12px]">
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-zinc-300" />
+        <span>connecting to crosscode daemon...</span>
       </div>
     </div>
   );
 }
 
-/** 6-digit PIN pairing gate shown when no (or an invalid) JWT is stored. */
 function PairingGate() {
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -74,15 +62,18 @@ function PairingGate() {
   };
 
   return (
-    <div className="app-aurora relative grid h-dvh place-items-center bg-obsidian text-slate-300">
-      <div className="panel rise relative z-10 flex w-[380px] max-w-[92vw] flex-col items-center gap-4 p-7">
-        <div className="grid h-12 w-12 place-items-center rounded-xl border hairline bg-gradient-to-br from-aurora/25 to-glacier/10">
-          <Hexagon className="h-6 w-6 text-aurora" />
+    <div className="grid h-dvh place-items-center bg-obsidian text-zinc-300">
+      <div className="panel flex w-[340px] max-w-[92vw] flex-col gap-4 p-6">
+        <div className="flex items-center gap-2 border-b hairline pb-3">
+          <Terminal className="h-4 w-4 text-zinc-200" />
+          <span className="font-mono text-[13px] font-semibold text-zinc-100">CrossCode Daemon</span>
+          <span className="chip ml-auto">AUTH</span>
         </div>
-        <div className="text-center">
-          <div className="text-[16px] font-semibold text-slate-100">配对守护进程</div>
-          <div className="mt-1 text-[12px] text-slate-500">输入 daemon 显示的 6 位配对 PIN，换取长期 JWT</div>
+
+        <div className="text-[12px] text-zinc-400">
+          输入本地终端输出的 6 位 PIN 码以授权当前设备访问。
         </div>
+
         <input
           value={pin}
           onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 6))}
@@ -92,36 +83,29 @@ function PairingGate() {
           inputMode="numeric"
           autoComplete="one-time-code"
           aria-label="6 位配对 PIN"
-          placeholder="······"
-          className="w-full rounded-xl border hairline bg-obsidian/60 py-2.5 text-center font-mono text-[22px] tracking-[0.5em] text-slate-100 outline-none transition focus:border-aurora/50 focus:ring-2 focus:ring-aurora/20"
+          placeholder="000000"
+          className="w-full rounded border hairline bg-obsidian py-2 text-center font-mono text-[20px] tracking-[0.45em] text-zinc-100 outline-none transition focus:border-zinc-500"
         />
-        {error && <div className="text-[12px] text-rosefire">{error}</div>}
+
+        {error && <div className="font-mono text-[11px] text-rosefire">{error}</div>}
+
         <button
           type="button"
-          className="btn btn-primary w-full !h-10"
+          className="btn btn-primary w-full !h-8"
           disabled={pin.length !== 6 || busy}
           onClick={() => void submit()}
         >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          {busy ? '配对中…' : '配对'}
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          {busy ? '验证中…' : '连接守护进程'}
         </button>
-        <div className="flex w-full items-center gap-3">
-          <span className="h-px flex-1 bg-white/[0.07]" />
-          <span className="text-[10px] text-slate-600">或</span>
-          <span className="h-px flex-1 bg-white/[0.07]" />
-        </div>
+
         <button
           type="button"
-          className="btn btn-ghost w-full !h-9"
-          onClick={() => enterDemoMode('手动进入离线演示模式')}
+          className="btn btn-ghost w-full !h-7 font-mono text-[11px]"
+          onClick={() => enterDemoMode('offline preview')}
         >
-          进入离线演示模式（无需 daemon）
+          离线预览 (Mock 数据)
         </button>
-        <div className="text-center text-[10px] leading-relaxed text-slate-600">
-          默认经 Vite 代理访问 daemon（/api 与 /ws），
-          <br />
-          可用 VITE_DAEMON_URL / CROSSCODE_DAEMON_URL 指定直连地址
-        </div>
       </div>
     </div>
   );
@@ -134,22 +118,22 @@ function Workbench() {
   const hasErrors = useWorkbenchStore((state) => state.errors.length > 0);
 
   return (
-    <div className="app-aurora relative flex h-dvh flex-col overflow-hidden bg-obsidian text-slate-200">
+    <div className="flex h-dvh flex-col overflow-hidden bg-obsidian text-zinc-200">
       <TopSwitchboardBar />
       {hasErrors && <ErrorSelfHealBanner />}
-      <div className="relative z-10 flex min-h-0 flex-1 pb-14 md:pb-0">
+      <div className="flex min-h-0 flex-1 pb-12 md:pb-0">
         <aside
           className={cn(
-            'min-w-0 flex-col border-r hairline bg-panel/40',
+            'min-w-0 flex-col border-r hairline bg-panel',
             mobilePane === 'projects' ? 'flex w-full' : 'hidden',
-            leftOpen ? 'md:flex md:w-72' : 'md:hidden',
+            leftOpen ? 'md:flex md:w-64' : 'md:hidden',
           )}
         >
           <SidebarProjectMatrix />
         </aside>
         <main
           className={cn(
-            'min-w-0 flex-1',
+            'min-w-0 flex-1 bg-obsidian',
             mobilePane === 'stream' ? 'flex flex-col' : 'hidden md:flex md:flex-col',
           )}
         >
@@ -157,9 +141,9 @@ function Workbench() {
         </main>
         <aside
           className={cn(
-            'min-w-0 flex-col border-l hairline bg-panel/40',
+            'min-w-0 flex-col border-l hairline bg-panel',
             mobilePane === 'inspector' ? 'flex w-full' : 'hidden',
-            rightOpen ? 'md:flex md:w-[360px]' : 'md:hidden',
+            rightOpen ? 'md:flex md:w-[340px]' : 'md:hidden',
           )}
         >
           <InspectorRightPane />

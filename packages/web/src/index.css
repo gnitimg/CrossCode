@@ -1,30 +1,31 @@
 @import "tailwindcss";
 
 /* ---------------------------------------------------------------------------
- * CrossCode design tokens ("深邃曜石黑" design language)
- * Tailwind v4 @theme — every token here also emits a CSS variable so custom
- * rules below can reference the same values.
+ * CrossCode Design System — Industrial Carbon / Precision Monospace
+ * Inspired by Zed, Linear, and Raycast. Zero neon gradients, tight radii,
+ * high-density tabular typography, 1px structural hairlines.
  * ------------------------------------------------------------------------- */
 @theme {
-  --color-obsidian: #090a0f;
-  --color-panel: #11131c;
-  --color-raised: #181b28;
-  --color-aurora: #8b5cf6;
+  --color-obsidian: #0a0a0c;
+  --color-panel: #111114;
+  --color-raised: #17171c;
+  --color-aurora: #e4e4e7;
   --color-ember: #d97757;
-  --color-glacier: #22d3ee;
+  --color-glacier: #38bdf8;
   --color-jade: #10b981;
-  --color-abyss: #3b82f6;
+  --color-abyss: #60a5fa;
   --color-rosefire: #f43f5e;
   --color-solar: #f59e0b;
 
-  --font-sans: "Inter", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "Cascadia Code", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace;
+  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "Fira Code", ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
 :root {
-  --hairline: rgba(255, 255, 255, 0.07);
-  --hairline-strong: rgba(255, 255, 255, 0.14);
-  --inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --hairline: rgba(255, 255, 255, 0.065);
+  --hairline-strong: rgba(255, 255, 255, 0.12);
+  --surface-hover: rgba(255, 255, 255, 0.035);
+  --surface-active: rgba(255, 255, 255, 0.065);
 }
 
 html,
@@ -37,69 +38,59 @@ body {
   margin: 0;
   overflow: hidden;
   background-color: var(--color-obsidian);
-  color: #e2e8f0;
+  color: #d4d4d8;
   font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
 }
 
 ::selection {
-  background: rgba(139, 92, 246, 0.35);
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
 }
 
 .hairline {
   border-color: var(--hairline);
 }
 
-/* Aurora ambience: faint brand-colored glows floating above the obsidian base */
-.app-aurora::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(1100px 520px at 8% -8%, rgba(139, 92, 246, 0.09), transparent 60%),
-    radial-gradient(900px 480px at 105% 108%, rgba(34, 211, 238, 0.07), transparent 55%),
-    radial-gradient(700px 380px at 55% 120%, rgba(217, 119, 87, 0.05), transparent 60%);
-}
-
-/* Glass panel: 1px hairline border + inner top highlight + deep drop shadow */
+/* Structural surface without neon glow */
 .panel {
   border: 1px solid var(--hairline);
-  border-radius: 14px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0) 38%),
-    var(--color-panel);
-  box-shadow: var(--inset-highlight), 0 12px 32px rgba(0, 0, 0, 0.4);
+  border-radius: 6px;
+  background-color: var(--color-panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
 }
 
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 20px;
-  padding: 0 8px;
-  border-radius: 9999px;
+  height: 19px;
+  padding: 0 6px;
+  border-radius: 4px;
   border: 1px solid var(--hairline);
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.025);
+  font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1;
-  color: #94a3b8;
+  color: #a1a1aa;
   white-space: nowrap;
 }
 
 .kbd {
   display: inline-flex;
   align-items: center;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 5px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 3px;
   border: 1px solid var(--hairline-strong);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.04);
   font-family: var(--font-mono);
   font-size: 10px;
-  color: #94a3b8;
+  color: #a1a1aa;
 }
 
 /* --- buttons ------------------------------------------------------------- */
@@ -107,92 +98,78 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 10px;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 5px;
   font-size: 12px;
-  color: #cbd5e1;
+  font-weight: 500;
+  color: #d4d4d8;
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease,
-    transform 0.08s ease,
-    box-shadow 0.15s ease,
-    color 0.15s ease;
+  transition: background-color 0.1s ease, border-color 0.1s ease, color 0.1s ease;
 }
-.btn:active {
-  transform: scale(0.97);
-}
+
 .btn:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: not-allowed;
-  transform: none;
 }
+
 .btn-ghost {
-  background: rgba(255, 255, 255, 0.03);
+  background: transparent;
+  border-color: transparent;
+  color: #a1a1aa;
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--surface-hover);
   border-color: var(--hairline);
+  color: #f4f4f5;
 }
-.btn-ghost:hover {
-  background: rgba(255, 255, 255, 0.07);
-  color: #e2e8f0;
-}
+
 .btn-primary {
-  background: linear-gradient(135deg, rgba(139, 92, 246, 0.92), rgba(99, 64, 218, 0.92));
-  color: #fff;
-  box-shadow: 0 2px 14px rgba(139, 92, 246, 0.35), var(--inset-highlight);
+  background: #f4f4f5;
+  border-color: #f4f4f5;
+  color: #09090b;
+  font-weight: 600;
 }
 .btn-primary:hover:not(:disabled) {
-  background: linear-gradient(135deg, rgba(139, 92, 246, 1), rgba(109, 74, 230, 1));
+  background: #ffffff;
 }
+
 .btn-jade {
-  background: rgba(16, 185, 129, 0.14);
-  border-color: rgba(16, 185, 129, 0.35);
-  color: #6ee7b7;
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #34d399;
 }
-.btn-jade:hover {
-  background: rgba(16, 185, 129, 0.22);
+.btn-jade:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.18);
 }
+
 .btn-danger {
-  background: rgba(244, 63, 94, 0.12);
-  border-color: rgba(244, 63, 94, 0.35);
-  color: #fda4af;
+  background: rgba(244, 63, 94, 0.1);
+  border-color: rgba(244, 63, 94, 0.3);
+  color: #fb7185;
 }
-.btn-danger:hover {
-  background: rgba(244, 63, 94, 0.2);
+.btn-danger:hover:not(:disabled) {
+  background: rgba(244, 63, 94, 0.18);
 }
+
 .btn-amber {
-  background: rgba(245, 158, 11, 0.14);
-  border-color: rgba(245, 158, 11, 0.4);
-  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
 }
-.btn-amber:hover {
-  background: rgba(245, 158, 11, 0.24);
-}
-
-/* --- motion -------------------------------------------------------------- */
-@keyframes breathe {
-  0%,
-  100% {
-    opacity: 0.45;
-    box-shadow: 0 0 3px currentColor;
-  }
-  50% {
-    opacity: 1;
-    box-shadow: 0 0 9px currentColor;
-  }
-}
-.breathe {
-  animation: breathe 2.2s ease-in-out infinite;
+.btn-amber:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.2);
 }
 
+/* --- subtle transitions -------------------------------------------------- */
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(2px);
   }
   to {
     opacity: 1;
@@ -200,12 +177,12 @@ body {
   }
 }
 .rise {
-  animation: rise 0.22s ease-out both;
+  animation: rise 0.12s ease-out both;
 }
 
 @keyframes drawer-up {
   from {
-    transform: translateY(24px);
+    transform: translateY(12px);
     opacity: 0;
   }
   to {
@@ -214,24 +191,24 @@ body {
   }
 }
 .drawer-up {
-  animation: drawer-up 0.2s ease-out both;
+  animation: drawer-up 0.14s ease-out both;
 }
 
 /* --- scrollbars ----------------------------------------------------------- */
 .stream-scroll {
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
 }
 .stream-scroll::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 .stream-scroll::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
+  border-radius: 3px;
 }
 .stream-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.22);
 }
 .stream-scroll::-webkit-scrollbar-track {
   background: transparent;
@@ -239,9 +216,9 @@ body {
 
 /* --- misc ----------------------------------------------------------------- */
 :focus-visible {
-  outline: 2px solid rgba(139, 92, 246, 0.55);
+  outline: 1px solid rgba(255, 255, 255, 0.35);
   outline-offset: 1px;
-  border-radius: 6px;
+  border-radius: 4px;
 }
 
 input,
@@ -251,7 +228,7 @@ button {
 }
 input::placeholder,
 textarea::placeholder {
-  color: #475569;
+  color: #52525b;
 }
 
 details > summary {

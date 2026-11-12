@@ -27,7 +27,7 @@
 - **双栖智能体内核**：它**自身就是一个完整的一等公民编程 Agent（`CrossCode Native Harness`）**，支持 `Plan / Build / Orchestrate` 三种模式；同时通过标准适配器（Adapters）统合调度本机已安装的 6 大编程工具。
 - **全能力共享中心**：一处安装 Skill，全平台零拷贝共享；内置 **Unified MCP Hub**，让本机所有编程 Agent 都能直接调用内置浏览器、外置 Chrome 扩展桥接以及 Windows 原生 Computer Use。
 - **统一 `CC-XXXX` 错误码与一键自愈**：实时拦截并归一化各家异构报错，支持一键切换备用 Provider 或热切换至另一款编程 Agent 无缝接力。
-- **博采众长的高颜值响应式工作台**：汲取 OpenCode Desktop、Cursor、Cline、Cherry Studio、Linear 的交互精髓，兼顾桌面端三栏 IDE 级审查体验与手机竖屏/微信小程序远程单手操控。
+- **多端自适应远程工作台**：提供桌面端三栏 IDE 级审查布局与手机竖屏单手操控模式。
 
 ---
 
@@ -71,7 +71,7 @@
 | `CC-PROC-5001` | 进程与网络 | 底层 CLI 进程非零退出或异常崩溃 | `RESTART_PROCESS`（记录 `.agent/logs` 并从检查点拉起） |
 | `CC-PROC-5002` | 进程与网络 | 上游模型网络断连或代理超时 (`ECONNRESET`, `ETIMEDOUT`) | `RETRY_BACKOFF`（检测网络通道并自动重连） |
 
-### 5. 🎨 博采众长的桌面级/移动端自适应工作台 (`@crosscode/web`)
+### 5. 🖥️ 桌面端与移动端自适应工作台 (`@crosscode/web`)
 - **OpenCode Desktop / Cursor 级三栏布局**：左侧项目与 Agent 矩阵 + 中间统一流式推理与工具时间线 + 右侧三合一检视器（**Git Diff 审查合入/回滚**、**内置浏览器/Computer Use 实时远程画面点按**、**`.agent` 记忆脑图**）。
 - **Cherry Studio 风格顶部复合切换栏**：一键切换当前项目的执行 Harness、Provider 渠道与 `Plan / Build / Orchestrate` 模式，带实时延迟与配额状态灯。
 - **Cline / Roo Code 风格透明工具审批卡**：折叠展示思考链与工具入参/出参，高危操作支持远程一键 `Approve / Reject`。
@@ -211,7 +211,7 @@ CrossCode Daemon 原生提供结构化 REST 与双向 WebSocket 接口，后期�
 - [x] **Phase 2**: 散落项目多源扫描器 (`ProjectScanner`) 与 Skills 虚拟化零拷贝同步器 (`SkillVirtualizer`)
 - [x] **Phase 3**: Unified MCP Hub（内置受控浏览器 + 外置 Chrome WebSocket 桥接 + Windows Computer Use）
 - [x] **Phase 4**: 双栖 Agent 核心（`CrossCodeNativeHarness` + OpenCode / Claude Code / Codex / Qoder / ZCode / DeepSeek 适配器）
-- [x] **Phase 5**: 本地守护网关与博采众长的响应式 Web 控制台 (`@crosscode/web`)
+- [x] **Phase 5**: 本地守护网关与响应式 Web 控制台 (`@crosscode/web`)
 - [ ] **Phase 6**: 微信小程序端轻量化遥控面板（扫码配对、微信消息推送工具审批提醒、语音下发编程任务）
 - [ ] **Phase 7**: Top-Level MCP Server 模式（将 CrossCode 自身作为超级 MCP 节点暴露给异地设备与云端工作流）
 

@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Cloud,
   FolderGit2,
-  GitBranch,
   Repeat,
   Search,
   SendHorizontal,
@@ -14,12 +13,6 @@ import { useWorkbenchStore } from '../store/workbench';
 import { HARNESS_META } from '../lib/harness';
 import { cn } from '../lib/cn';
 
-/**
- * Ctrl/Cmd+K command palette: switch project / harness / provider / mode and
- * send the typed text as a prompt. Full keyboard navigation — ArrowUp/Down to
- * move, Enter to execute, Esc to dismiss.
- */
-
 interface PaletteCommand {
   id: string;
   icon: LucideIcon;
@@ -29,9 +22,9 @@ interface PaletteCommand {
 }
 
 const MODE_COMMANDS: ReadonlyArray<{ id: AgentMode; label: string }> = [
-  { id: 'plan', label: '规划 (plan)' },
-  { id: 'build', label: '构建 (build)' },
-  { id: 'orchestrate', label: '编排 (orchestrate)' },
+  { id: 'plan', label: 'Plan' },
+  { id: 'build', label: 'Build' },
+  { id: 'orchestrate', label: 'Orchestrate' },
 ];
 
 export function CommandPalette() {
@@ -155,15 +148,15 @@ export function CommandPalette() {
     <div
       role="dialog"
       aria-label="命令面板"
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 pt-[12vh] backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 pt-[14vh]"
       onMouseDown={close}
     >
       <div
-        className="panel rise !rounded-2xl w-[560px] max-w-[92vw] overflow-hidden"
+        className="panel rise w-[520px] max-w-[92vw] overflow-hidden"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center gap-2.5 border-b hairline px-3.5 py-3">
-          <Search className="h-4 w-4 shrink-0 text-slate-500" />
+        <div className="flex items-center gap-2 border-b hairline px-3 py-2.5">
+          <Search className="h-3.5 w-3.5 shrink-0 text-zinc-500" />
           <input
             autoFocus
             value={query}
@@ -171,13 +164,13 @@ export function CommandPalette() {
             onKeyDown={onKeyDown}
             placeholder="输入命令或提示词…（↑↓ 选择，Enter 执行）"
             aria-label="命令面板输入"
-            className="min-w-0 flex-1 bg-transparent text-[14px] text-slate-100 outline-none"
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-zinc-100 outline-none"
           />
           <span className="kbd">ESC</span>
         </div>
-        <div role="listbox" aria-label="命令列表" className="stream-scroll max-h-[320px] overflow-y-auto p-1.5">
+        <div role="listbox" aria-label="命令列表" className="stream-scroll max-h-[300px] overflow-y-auto p-1">
           {filtered.length === 0 ? (
-            <div className="px-3 py-6 text-center text-[12px] text-slate-600">没有匹配的命令</div>
+            <div className="px-3 py-6 text-center font-mono text-[11.5px] text-zinc-600">No matching commands</div>
           ) : (
             filtered.map((command, index) => (
               <button
@@ -192,27 +185,18 @@ export function CommandPalette() {
                   close();
                 }}
                 className={cn(
-                  'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition',
+                  'flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[12.5px] transition',
                   index === clampedIndex
-                    ? 'bg-aurora/[0.14] text-slate-100 shadow-[inset_2px_0_0_0_#8b5cf6]'
-                    : 'text-slate-400 hover:bg-white/[0.04]',
+                    ? 'bg-white/[0.08] text-zinc-100'
+                    : 'text-zinc-400 hover:bg-white/[0.04]',
                 )}
               >
-                <command.icon className="h-4 w-4 shrink-0 text-slate-500" />
+                <command.icon className="h-3.5 w-3.5 shrink-0 text-zinc-500" />
                 <span className="min-w-0 flex-1 truncate">{command.label}</span>
-                <span className="chip shrink-0 !text-[10px]">{command.group}</span>
+                <span className="font-mono text-[10px] text-zinc-600">{command.group}</span>
               </button>
             ))
           )}
-        </div>
-        <div className="flex items-center gap-3 border-t hairline px-3.5 py-2 text-[10px] text-slate-600">
-          <span><span className="kbd">↑</span> <span className="kbd">↓</span> 选择</span>
-          <span><span className="kbd">Enter</span> 执行</span>
-          <span><span className="kbd">Esc</span> 关闭</span>
-          <span className="ml-auto inline-flex items-center gap-1">
-            <GitBranch className="h-3 w-3" />
-            {filtered.length} 条命令
-          </span>
         </div>
       </div>
     </div>
