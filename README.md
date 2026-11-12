@@ -76,8 +76,8 @@
 - **Cherry Studio 风格顶部复合切换栏**：一键切换当前项目的执行 Harness、Provider 渠道与 `Plan / Build / Orchestrate` 模式，带实时延迟与配额状态灯。
 - **Cline / Roo Code 风格透明工具审批卡**：折叠展示思考链与工具入参/出参，高危操作支持远程一键 `Approve / Reject`。
 - **Linear / Raycast 风格 `Ctrl/Cmd + K` 命令面板**：全键盘极速切换项目、切换底层 Agent、触发上下文压缩或直接发送指令。
-- **移动端与微信小程序就绪**：支持 6 位动态 PIN 码设备配对换取 JWT，手机竖屏访问自动切换为底部大拇指导航栏与抽屉式极速遥控视图。
-- **Electron 桌面端**：内置 daemon 与工作台，无需预装 Node、无需手动开终端；托盘常驻、单实例锁、`Alt+Shift+C` 全局唤起命令面板、`CC-TOOL-4002` 系统原生通知（点击直达审批），可打包为 NSIS 安装包。
+- **移动端与微信小程序就绪**：远程访问使用 6 位动态 PIN 配对（**每 5 分钟自动轮换，旧码立即失效**），手机竖屏访问自动切换为底部大拇指导航栏与抽屉式极速遥控视图。
+- **Electron 桌面端**：内置 daemon 与工作台，无需预装 Node、无需手动开终端，且**本机免配对**；托盘常驻、单实例锁、`Alt+Shift+C` 全局唤起命令面板、`CC-TOOL-4002` 系统原生通知（点击直达审批）。桌面端「设置 → 连接」展示实时 PIN、倒计时与局域网地址，用于给手机/小程序授权。
 
 ---
 
@@ -198,7 +198,9 @@ CrossCode Daemon 原生提供结构化 REST 与双向 WebSocket 接口，后期�
 
 | 端点 / 通道 | 方法 | 说明 |
 | :--- | :--- | :--- |
-| `/pair` | `POST` | 输入本机 6 位配对 PIN 码（连续失败触发速率锁定），换取远程设备访问 `JWT Token` |
+| `/pair` | `POST` | 输入 6 位配对 PIN（每 5 分钟轮换，连续失败触发速率锁定），换取远程设备访问 `JWT Token` |
+| `/pairing` | `GET` | 读取当前实时 PIN、到期时间戳与局域网访问地址（需 JWT，供桌面端设置页与远程端展示） |
+| `/pairing/rotate` | `POST` | 立即轮换 PIN 并清除配对失败锁定（需 JWT） |
 | `/projects` | `GET` | 获取本机跨 App 自动归集的全量项目列表、活跃 Agent 与 `.agent` 状态 |
 | `/providers` | `GET` | 获取 Provider 目录（内置 6 家 + 自定义 OpenAI 兼容端点）与环境变量注入规格 |
 | `/projects/:id/harness` | `POST` | 无缝热切换指定项目的底层执行引擎 `Harness`（并同步 `.agent/manifest.json`） |

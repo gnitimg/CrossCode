@@ -20,7 +20,9 @@ pnpm test                    # 仓库根：所有包测试一条命令全绿（v
 
 ### 配对流程
 
-未配对/断线时展示 PIN 配对界面：输入 daemon 显示的 6 位 PIN → `POST /pair` → 得到 HS256 JWT（30 天）→ 存入 `localStorage`（key: `crosscode.gateway.jwt`）→ `GET /projects|/providers|/skills` 预热 → 连接 `WS /ws/session?projectPath=…` 并以 `{type:"auth", token}` 鉴权。JWT 被拒（WS close 4001）会回到配对界面。
+未配对/断线时展示 PIN 配对界面：输入 daemon 显示的 6 位 PIN（每 5 分钟自动轮换）→ `POST /pair` → 得到 HS256 JWT（30 天）→ 存入 `localStorage`（key: `crosscode.gateway.jwt`）→ `GET /projects|/providers|/skills` 预热 → 连接 `WS /ws/session?projectPath=…` 并以 `{type:"auth", token}` 鉴权。JWT 被拒（WS close 4001）会回到配对界面。
+
+已配对后，顶栏「设置 → 连接」会通过 `GET /pairing` 显示实时 PIN、倒计时与局域网地址，方便给别人/自己的手机授权；「刷新」调用 `POST /pairing/rotate` 立即换码。
 
 ### 协议对接摘要
 
@@ -28,7 +30,7 @@ pnpm test                    # 仓库根：所有包测试一条命令全绿（v
 | --- | --- |
 | 下行 | `UnifiedStreamEvent` 全量 8 种（thinking/text delta、tool_call_start/result、file_change、normalized_error、harness_switched、screen_frame）+ `approval_request` / `approval_resolved` / `session_attached` / `provider_switched` / `auth_ok` / `error` |
 | 上行 | `auth` / `approve` / `reject` / `send_prompt` / `switch_provider` |
-| REST | `/pair`、`/projects`、`/providers`、`/projects/:id/harness`、`/projects/:id/provider`、`/projects/:id/diff(+/accept|/discard)`、`/skills (GET/PUT)` |
+| REST | `/pair`、`/pairing (GET)`、`/pairing/rotate (POST)`、`/projects`、`/providers`、`/projects/:id/harness`、`/projects/:id/provider`、`/projects/:id/diff(+/accept|/discard)`、`/skills (GET/PUT)` |
 
 ## 离线演示模式
 

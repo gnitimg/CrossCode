@@ -6,6 +6,7 @@ import {
   PanelLeft,
   PanelRightClose,
   PanelRight,
+  Settings,
   Terminal,
 } from 'lucide-react';
 import { ALL_HARNESS_IDS } from '@crosscode/shared';
@@ -261,6 +262,7 @@ export function TopSwitchboardBar() {
   const toggleLeft = useWorkbenchStore((state) => state.toggleLeft);
   const toggleRight = useWorkbenchStore((state) => state.toggleRight);
   const openPalette = useWorkbenchStore((state) => state.openPalette);
+  const openSettings = useWorkbenchStore((state) => state.openSettings);
 
   return (
     <header className="relative z-30 flex h-10 shrink-0 items-center gap-2.5 border-b hairline bg-panel px-3">
@@ -289,6 +291,15 @@ export function TopSwitchboardBar() {
         >
           <Command className="h-3 w-3 text-zinc-400" />
           <span className="kbd hidden sm:inline-flex">Ctrl K</span>
+        </button>
+        <button
+          type="button"
+          onClick={openSettings}
+          className="btn btn-ghost !h-7 !w-7 !p-0 border hairline"
+          aria-label="设置"
+          title="设置 · 连接与配对 PIN"
+        >
+          <Settings className="h-3.5 w-3.5" />
         </button>
         <div className="hidden items-center gap-1 md:flex">
           <button

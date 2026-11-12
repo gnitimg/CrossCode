@@ -32,6 +32,16 @@ export interface SkillsState {
   updatedAt: string;
 }
 
+/** Live pairing PIN snapshot (rotating every 5 minutes by default). */
+export interface PairingSnapshot {
+  pin: string;
+  expiresAt: string | null;
+  expiresAtMs: number | null;
+  ttlMs: number;
+  /** LAN origins a phone / mini-program can reach. */
+  lanUrls: string[];
+}
+
 export interface GatewayDiffChange {
   status: string;
   file: string;
@@ -190,5 +200,15 @@ export class DaemonApiClient {
 
   putSkill(skillId: string, enabled: boolean): Promise<SkillsState> {
     return this.request('PUT', '/skills', { skillId, enabled });
+  }
+
+  /** Current rotating PIN + LAN origins (requires a paired JWT). */
+  getPairing(): Promise<PairingSnapshot> {
+    return this.request<PairingSnapshot>('GET', '/pairing');
+  }
+
+  /** Forces a new PIN immediately (settings refresh button). */
+  rotatePin(): Promise<PairingSnapshot> {
+    return this.request<PairingSnapshot>('POST', '/pairing/rotate');
   }
 }

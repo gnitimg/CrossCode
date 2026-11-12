@@ -39,6 +39,7 @@ import { registerStaticFiles } from './static-files.js';
 
 const GATEWAY_JWT_ISSUER = 'crosscode-gateway';
 const DEFAULT_JWT_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
+const DEFAULT_PIN_TTL_MS = 5 * 60 * 1000; // pairing PIN rotates every 5 minutes
 const WS_CLOSE_UNAUTHORIZED = 4001;
 const WS_CLOSE_NO_SESSION = 4002;
 
@@ -171,6 +172,21 @@ export interface PairRateLimitOptions {
   now?: () => number;
 }
 
+export interface PairingState {
+  pin: string;
+  /** ISO timestamp when the PIN stops being valid; null when rotation is off. */
+  expiresAt: string | null;
+  /** Epoch ms copy of the expiry (client countdown). */
+  expiresAtMs: number | null;
+  /** Rotation window. 0 when the PIN is fixed or externally managed. */
+  ttlMs: number;
+}
+
+export interface PairingSnapshot extends PairingState {
+  /** LAN origins remote devices (phone / mini-program) can reach. */
+  lanUrls: string[];
+}
+
 export interface GatewayOptions {
   /** HS256 secret used to sign and verify pairing JWTs. */
   jwtSecret: string;
@@ -180,6 +196,12 @@ export interface GatewayOptions {
   pin?: string;
   /** Dynamic PIN source consulted on every /pair call (overrides `pin`). */
   getPin?: () => string;
+  /**
+   * PIN rotation window. A fresh PIN is generated every `pinTtlMs` so a leaked
+   * or shoulder-surfed code expires; remote devices must pair within the
+   * window. Default 5 minutes; 0 disables rotation. Ignored when `getPin` is set.
+   */
+  pinTtlMs?: number;
   /** Scan options handed to {@link ProjectScanner.scanAll}. */
   scanOptions?: ProjectScanOptions;
   /** Injectable scan function (tests point it at a temp workspace). */
@@ -218,6 +240,10 @@ export interface GatewayHandle {
   setPin(pin: string): void;
   /** Returns the currently valid pairing PIN. */
   getPin(): string;
+  /** Current PIN plus its expiry window (for the settings screen). */
+  getPairingState(): PairingState;
+  /** Immediately rotates the PIN (settings "refresh" button). */
+  rotatePin(): string;
   /** Closes all websocket clients, the ws server and the Fastify instance. */
   close(): Promise<void>;
 }
@@ -346,6 +372,19 @@ function pinsMatch(candidate: string, expected: string): boolean {
   return timingSafeEqual(Buffer.from(candidate, 'utf8'), Buffer.from(expected, 'utf8'));
 }
 
+/** Non-loopback IPv4 origins remote devices can use to reach this daemon. */
+function collectLanUrls(port: number | undefined): string[] {
+  if (!port) return [];
+  const urls: string[] = [];
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family !== 'IPv4' || entry.internal) continue;
+      urls.push(`http://${entry.address}:${port}`);
+    }
+  }
+  return urls;
+}
+
 export function createGateway(options: GatewayOptions): GatewayHandle {
   if (!options.jwtSecret || typeof options.jwtSecret !== 'string') {
     throw new Error('createGateway requires a jwtSecret');
@@ -367,13 +406,36 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
   const scanProjects = options.scanProjects ?? (async () => ProjectScanner.scanAll(options.scanOptions ?? {}));
 
   let currentPin = options.pin ?? String(randomInt(100000, 1000000));
+  const pinTtlMs = options.getPin ? 0 : Math.max(0, Math.floor(options.pinTtlMs ?? DEFAULT_PIN_TTL_MS));
+  let pinExpiresAt: number | null = pinTtlMs > 0 ? Date.now() + pinTtlMs : null;
   const getPin = (): string => (options.getPin ? options.getPin() : currentPin);
+  const getPairingState = (): PairingState => ({
+    pin: getPin(),
+    expiresAt: pinExpiresAt === null ? null : new Date(pinExpiresAt).toISOString(),
+    expiresAtMs: pinExpiresAt,
+    ttlMs: pinTtlMs,
+  });
+  const rotatePin = (): string => {
+    if (options.getPin) return getPin();
+    currentPin = String(randomInt(100000, 1000000));
+    pinExpiresAt = pinTtlMs > 0 ? Date.now() + pinTtlMs : null;
+    return currentPin;
+  };
   const setPin = (pin: string): void => {
     if (!/^\d{6}$/.test(pin)) {
       throw new Error('pin must be exactly 6 digits');
     }
     currentPin = pin;
+    pinExpiresAt = pinTtlMs > 0 ? Date.now() + pinTtlMs : null;
   };
+
+  // Time-limited PIN: rotate on a fixed cadence so a leaked code goes stale.
+  // unref() keeps the timer from holding the process (and test runners) open.
+  let pinRotationTimer: ReturnType<typeof setInterval> | null = null;
+  if (pinTtlMs > 0) {
+    pinRotationTimer = setInterval(rotatePin, pinTtlMs);
+    pinRotationTimer.unref?.();
+  }
 
   // Pairing brute-force protection: consecutive failures lock /pair for a
   // window; a successful pairing clears the counters. Clock injectable.
@@ -504,6 +566,26 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
       expiresIn: ttlSeconds,
       issuedAt: new Date(issuedAt * 1000).toISOString(),
     };
+  });
+
+  // --- Pairing state (authenticated) ---------------------------------------
+
+  /** Snapshot of the live PIN + LAN origins for the settings screen. */
+  const pairingSnapshot = (): PairingSnapshot => {
+    const address = app.server.address();
+    const port = address && typeof address === 'object' ? address.port : undefined;
+    return { ...getPairingState(), lanUrls: collectLanUrls(port) };
+  };
+
+  app.get('/pairing', { preHandler: [requireAuth] }, async () => pairingSnapshot());
+
+  app.post('/pairing/rotate', { preHandler: [requireAuth] }, async () => {
+    rotatePin();
+    // A manual rotation is an operator action: clear any pairing lockout so the
+    // freshly issued PIN works immediately.
+    pairFailures = 0;
+    pairLockedUntil = 0;
+    return pairingSnapshot();
   });
 
   // --- REST routes (all require a Bearer token) ----------------------------
@@ -976,6 +1058,10 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
   });
 
   async function close(): Promise<void> {
+    if (pinRotationTimer) {
+      clearInterval(pinRotationTimer);
+      pinRotationTimer = null;
+    }
     for (const ws of sockets) {
       try {
         ws.close(1012, 'gateway shutting down');
@@ -996,6 +1082,8 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
     wsServer,
     setPin,
     getPin,
+    getPairingState,
+    rotatePin,
     close,
   };
 }

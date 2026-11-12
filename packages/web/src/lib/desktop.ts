@@ -7,6 +7,8 @@ export interface CrossCodeDesktopBridge {
   readonly platform: string;
   /** Global shortcut (Alt+Shift+C) asks the workbench to open the palette. */
   onTogglePalette(callback: () => void): () => void;
+  /** Tray menu asks the workbench to open Settings → Connection. */
+  onOpenSettings(callback: () => void): () => void;
   /** A native approval notification was clicked. */
   onFocusApprovals(callback: () => void): () => void;
 }

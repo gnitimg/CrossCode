@@ -8,6 +8,7 @@ import { SidebarProjectMatrix } from './components/SidebarProjectMatrix';
 import { UnifiedAgentStream } from './components/UnifiedAgentStream';
 import { InspectorRightPane } from './components/InspectorRightPane';
 import { CommandPalette } from './components/CommandPalette';
+import { SettingsDialog } from './components/SettingsDialog';
 import { ErrorSelfHealBanner } from './components/ErrorSelfHealBanner';
 import { MobileNav } from './components/MobileNav';
 import { cn } from './lib/cn';
@@ -36,6 +37,7 @@ export default function App() {
     const bridge = getDesktopBridge();
     if (!bridge) return;
     const offPalette = bridge.onTogglePalette(() => useWorkbenchStore.getState().openPalette());
+    const offSettings = bridge.onOpenSettings(() => useWorkbenchStore.getState().openSettings());
     const offApprovals = bridge.onFocusApprovals(() => {
       const state = useWorkbenchStore.getState();
       state.setMobilePane('stream');
@@ -43,6 +45,7 @@ export default function App() {
     });
     return () => {
       offPalette();
+      offSettings();
       offApprovals();
     };
   }, []);
@@ -168,6 +171,7 @@ function Workbench() {
       </div>
       <MobileNav />
       <CommandPalette />
+      <SettingsDialog />
     </div>
   );
 }

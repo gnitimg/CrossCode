@@ -322,8 +322,79 @@ describe('gateway pairing and auth', () => {
     expect(newPin.token).not.toBeNull();
   });
 
-  it('locks /pair after consecutive failures and recovers when the lockout expires', async () => {
+  it('exposes the live PIN and its expiry to authenticated clients', async () => {
     const root = await trackRoot();
+    const gateway = trackGateway(makeGatewayForRoot(root));
+    const paired = await pair(gateway, '123456');
+    expect(paired.token).not.toBeNull();
+
+    const denied = await gateway.app.inject({ method: 'GET', url: '/pairing' });
+    expect(denied.statusCode).toBe(401);
+
+    const snapshot = await authorizedJson(gateway, 'GET', '/pairing', paired.token!);
+    expect(snapshot.statusCode).toBe(200);
+    const state = snapshot.json as {
+      pin: string;
+      expiresAt: string | null;
+      expiresAtMs: number | null;
+      ttlMs: number;
+      lanUrls: string[];
+    };
+    expect(state.pin).toBe('123456');
+    expect(state.ttlMs).toBe(5 * 60 * 1000);
+    expect(typeof state.expiresAt).toBe('string');
+    expect(state.expiresAtMs).toBeGreaterThan(Date.now());
+    expect(Array.isArray(state.lanUrls)).toBe(true);
+  });
+
+  it('rotates the PIN automatically after pinTtlMs and invalidates the old code', async () => {
+    const root = await trackRoot();
+    const gateway = trackGateway(makeGatewayForRoot(root, { pinTtlMs: 40 }));
+    const first = await pair(gateway, '123456');
+    expect(first.statusCode).toBe(200);
+
+    await sleep(70);
+
+    // The expired code no longer pairs.
+    const stale = await pair(gateway, '123456');
+    expect(stale.statusCode).toBe(403);
+
+    // The rotating code is different and works.
+    const snapshot = await authorizedJson(gateway, 'GET', '/pairing', first.token!);
+    const state = snapshot.json as { pin: string; expiresAtMs: number | null; ttlMs: number };
+    expect(state.pin).not.toBe('123456');
+    expect(state.ttlMs).toBe(40);
+    expect(state.expiresAtMs).toBeGreaterThan(Date.now());
+
+    const refreshed = await pair(gateway, state.pin);
+    expect(refreshed.statusCode).toBe(200);
+  });
+
+  it('rotates on demand and clears a pairing lockout', async () => {
+    const root = await trackRoot();
+    const gateway = trackGateway(
+      makeGatewayForRoot(root, {
+        pairRateLimit: { maxFailures: 2, lockoutSeconds: 600 },
+      }),
+    );
+    const paired = await pair(gateway, '123456');
+    expect(paired.token).not.toBeNull();
+
+    expect((await pair(gateway, '000001')).statusCode).toBe(403);
+    expect((await pair(gateway, '000002')).statusCode).toBe(403);
+    expect((await pair(gateway, '123456')).statusCode).toBe(429);
+
+    const rotated = await authorizedJson(gateway, 'POST', '/pairing/rotate', paired.token!);
+    expect(rotated.statusCode).toBe(200);
+    const nextPin = (rotated.json as { pin: string }).pin;
+    expect(nextPin).not.toBe('123456');
+
+    // Lockout was cleared by the operator-initiated rotation.
+    const fresh = await pair(gateway, nextPin);
+    expect(fresh.statusCode).toBe(200);
+  });
+
+  it('locks /pair after consecutive failures and recovers when the lockout expires', async () => {    const root = await trackRoot();
     let nowMs = 1_700_000_000_000;
     const gateway = trackGateway(
       makeGatewayForRoot(root, {

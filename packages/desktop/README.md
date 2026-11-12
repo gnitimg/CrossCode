@@ -8,8 +8,9 @@
 | :--- | :--- |
 | 内置 daemon | 主进程内 `startDaemonRuntime()` 启动 `@crosscode/daemon` 网关，用户无需安装 Node，也无需手动开终端 |
 | 单源托管 | daemon 同时托管工作台构建产物（`/api/**` 前缀重写 + `/ws/session`），无 CORS、无代理 |
-| 自动配对 | 首次启动生成并持久化 JWT 密钥与 PIN，自签 JWT 后通过 `?token=` 交给渲染进程，桌面端不弹配对框 |
-| 托盘常驻 | 关窗仅隐藏；托盘菜单含打开窗口、浏览器打开、复制 PIN、开机自启、退出 |
+| 自动配对 | 首次启动生成并持久化 JWT 密钥，PIN 由网关随机生成并每 5 分钟轮换；桌面端自签 JWT 后经 `?token=` 交给渲染进程，本机**不弹配对框** |
+| 远程授权 | 「设置 → 连接」显示实时 PIN（含倒计时与局域网地址），供手机 / 小程序配对；托盘「连接设置…」可直接唤起 |
+| 托盘常驻 | 关窗仅隐藏；托盘菜单含打开窗口、浏览器打开、连接设置、复制 PIN、开机自启、退出 |
 | 原生审批通知 | daemon 收到 `requiresApproval` 工具调用 → 系统通知，点击直达工作台 |
 | 全局快捷键 | `Alt+Shift+C` 唤起命令面板（可在 `main.ts` 的 `GLOBAL_PALETTE_SHORTCUT` 调整） |
 | 安全边界 | `contextIsolation` + `sandbox` + 无 `nodeIntegration`；仅暴露 3 个能力的最小 preload 桥；外链一律交给系统浏览器 |
@@ -27,6 +28,15 @@ pnpm --filter @crosscode/desktop installer    # 在便携版基础上产出 NSIS
 ```
 
 根目录快捷命令：`pnpm desktop`（开发启动）、`pnpm desktop:dist`（构建工作台 + 便携版）。
+
+## 远程配对（手机 / 小程序）
+
+桌面端本机访问不需要 PIN。要给远程设备授权时，打开「设置 → 连接」：
+
+- **实时 PIN**：6 位数字，每 5 分钟自动轮换，旧码立即失效；面板显示倒计时与刷新按钮。
+- **局域网地址**：自动列出本机非回环 IPv4 地址（如 `http://192.168.1.24:4610`），一键复制。
+- 远程设备在同一网络打开该地址，输入 PIN 即换取 30 天 JWT；跨网访问需自行配置隧道（Cloudflare Tunnel / Tailscale 等）。
+- 手动刷新 PIN 会同时清除连续失败导致的配对锁定。
 
 ## 环境变量
 

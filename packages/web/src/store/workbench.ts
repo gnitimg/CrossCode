@@ -25,7 +25,7 @@ import { buildDemoData, demoReplyFor } from './demo';
 import type { ApprovalCard, ConnectionMode, InspectorTab, MobilePane, ScreenFrameView, WsStatus } from './model';
 import { HARNESS_META } from '../lib/harness';
 import { toDiffSummaryView, type DiffSummaryView } from '../lib/diff';
-import type { DaemonApiClient, ProviderCatalogEntry } from '../api/client';
+import type { DaemonApiClient, PairingSnapshot, ProviderCatalogEntry } from '../api/client';
 import type { SessionTransport } from '../api/ws-client';
 
 /**
@@ -73,6 +73,9 @@ export interface WorkbenchData {
   leftOpen: boolean;
   rightOpen: boolean;
   paletteOpen: boolean;
+  settingsOpen: boolean;
+  pairing: PairingSnapshot | null;
+  pairingError: string | null;
   mobilePane: MobilePane;
   switchboardDrawerOpen: boolean;
 }
@@ -118,6 +121,11 @@ export interface WorkbenchActions {
   togglePalette(): void;
   openPalette(): void;
   closePalette(): void;
+  openSettings(): void;
+  closeSettings(): void;
+  refreshPairing(): Promise<void>;
+  rotatePairing(): Promise<void>;
+  setPairing(pairing: PairingSnapshot | null): void;
   setMobilePane(pane: MobilePane): void;
   setSwitchboardDrawerOpen(open: boolean): void;
 }
@@ -157,6 +165,9 @@ function initialWorkbenchData(): WorkbenchData {
     leftOpen: true,
     rightOpen: true,
     paletteOpen: false,
+    settingsOpen: false,
+    pairing: null,
+    pairingError: null,
     mobilePane: 'stream',
     switchboardDrawerOpen: false,
   };
@@ -462,6 +473,13 @@ export const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
       timeline: demo.timeline,
       approvals: demo.approvals,
       screenFrames: demo.screenFrames,
+      pairing: {
+        pin: '482913',
+        expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+        expiresAtMs: Date.now() + 5 * 60_000,
+        ttlMs: 5 * 60_000,
+        lanUrls: ['http://192.168.1.24:4610'],
+      },
     }));
   },
 
@@ -473,6 +491,33 @@ export const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   togglePalette: () => set((state) => ({ paletteOpen: !state.paletteOpen })),
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),
+
+  // --- settings / pairing --------------------------------------------------
+  openSettings: () => {
+    set({ settingsOpen: true });
+    void get().refreshPairing();
+  },
+  closeSettings: () => set({ settingsOpen: false }),
+  setPairing: (pairing) => set({ pairing, pairingError: null }),
+  refreshPairing: async () => {
+    const { api } = get();
+    if (!api) return;
+    try {
+      get().setPairing(await api.getPairing());
+    } catch (error) {
+      set({ pairingError: error instanceof Error ? error.message : String(error) });
+    }
+  },
+  rotatePairing: async () => {
+    const { api } = get();
+    if (!api) return;
+    try {
+      get().setPairing(await api.rotatePin());
+    } catch (error) {
+      set({ pairingError: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
   setMobilePane: (pane) => set({ mobilePane: pane }),
   setSwitchboardDrawerOpen: (open) => set({ switchboardDrawerOpen: open }),
 }));

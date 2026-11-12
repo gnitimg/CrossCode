@@ -1,6 +1,5 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { randomInt } from 'node:crypto';
 import { createDaemonSessionManager, createGateway, type GatewayHandle } from '@crosscode/daemon';
 
 /**
@@ -37,7 +36,6 @@ export interface DaemonRuntime {
   /** Plain URL without credentials (for "open in browser"). */
   baseUrl: string;
   port: number;
-  pin: string;
   /** Gateway JWT the shell minted for itself (also embedded in `url`). */
   token: string;
   gateway: GatewayHandle;
@@ -45,31 +43,26 @@ export interface DaemonRuntime {
 }
 
 interface DesktopConfig {
+  /** Persisted so already-paired remote devices keep their JWTs across restarts. */
   jwtSecret: string;
-  pin: string;
 }
 
 const DEFAULT_PORT = 4610;
 const MAX_PORT_ATTEMPTS = 12;
-
-function randomPin(): string {
-  return String(randomInt(100000, 1000000));
-}
 
 async function loadConfig(configDir: string): Promise<DesktopConfig> {
   const file = path.join(configDir, 'daemon.json');
   try {
     const raw = await fs.readFile(file, 'utf8');
     const parsed = JSON.parse(raw) as Partial<DesktopConfig>;
-    if (typeof parsed.jwtSecret === 'string' && parsed.jwtSecret.length >= 32 && /^\d{6}$/.test(String(parsed.pin))) {
-      return { jwtSecret: parsed.jwtSecret, pin: String(parsed.pin) };
+    if (typeof parsed.jwtSecret === 'string' && parsed.jwtSecret.length >= 32) {
+      return { jwtSecret: parsed.jwtSecret };
     }
   } catch {
     // missing or unreadable config → create a fresh one below
   }
   const config: DesktopConfig = {
     jwtSecret: Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex'),
-    pin: randomPin(),
   };
   await fs.mkdir(configDir, { recursive: true });
   await fs.writeFile(file, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 }).catch(() => undefined);
@@ -110,7 +103,6 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
     const candidate = preferredPort + attempt;
     const handle = createGateway({
       jwtSecret: config.jwtSecret,
-      pin: config.pin,
       staticDir: options.webDistDir,
       sessionManager,
       ...(workspaceRoots
@@ -143,19 +135,17 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
   const baseUrl = `http://127.0.0.1:${port}`;
   let token: string;
   try {
-    token = await mintToken(baseUrl, config.pin);
+    token = await mintToken(baseUrl, gateway.getPin());
   } catch {
-    // A persisted PIN can be locked out by pairing rate limiting; rotate and retry once.
-    const rotated = randomPin();
-    gateway.setPin(rotated);
-    token = await mintToken(baseUrl, rotated);
+    // A stale lockout can block self-pairing; rotating clears it.
+    gateway.rotatePin();
+    token = await mintToken(baseUrl, gateway.getPin());
   }
 
   return {
     url: `${baseUrl}/?desktop=1&token=${encodeURIComponent(token)}`,
     baseUrl,
     port,
-    pin: gateway.getPin(),
     token,
     gateway,
     async close() {

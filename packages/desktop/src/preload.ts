@@ -13,6 +13,12 @@ const api = {
     ipcRenderer.on('crosscode:toggle-palette', listener);
     return () => ipcRenderer.removeListener('crosscode:toggle-palette', listener);
   },
+  /** Tray → 连接设置 opens Settings → Connection. */
+  onOpenSettings(callback: () => void): () => void {
+    const listener = (): void => callback();
+    ipcRenderer.on('crosscode:open-settings', listener);
+    return () => ipcRenderer.removeListener('crosscode:open-settings', listener);
+  },
   /** Fires when the window regains focus while approvals are pending. */
   onFocusApprovals(callback: () => void): () => void {
     const listener = (): void => callback();

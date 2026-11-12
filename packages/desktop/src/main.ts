@@ -172,11 +172,19 @@ function createTray(): void {
     },
     { type: 'separator' },
     {
+      label: '连接设置…',
+      click: () => {
+        showWindow();
+        mainWindow?.webContents.send('crosscode:open-settings');
+      },
+    },
+    {
       label: '复制配对 PIN',
       click: () => {
         if (!runtime) return;
-        clipboard.writeText(runtime.pin);
-        new Notification({ title: '配对 PIN 已复制', body: runtime.pin }).show();
+        const state = runtime.gateway.getPairingState();
+        clipboard.writeText(state.pin);
+        new Notification({ title: '配对 PIN 已复制', body: `${state.pin}（5 分钟内有效）` }).show();
       },
     },
     {
@@ -233,6 +241,25 @@ async function bootstrap(): Promise<void> {
     });
     const projects = authorized.ok ? ((await authorized.json()) as unknown[]) : null;
     checks.push(['api-authorized', authorized.ok && Array.isArray(projects)]);
+
+    // Remote devices pair with a rotating PIN the desktop shows in Settings.
+    const pairingDenied = await fetch(`${runtime.baseUrl}/api/pairing`);
+    checks.push(['pairing-auth', pairingDenied.status === 401]);
+    const pairingResponse = await fetch(`${runtime.baseUrl}/api/pairing`, {
+      headers: { authorization: `Bearer ${runtime.token}` },
+    });
+    const pairing = pairingResponse.ok
+      ? ((await pairingResponse.json()) as { pin?: string; ttlMs?: number; expiresAtMs?: number })
+      : null;
+    checks.push([
+      'pairing-live',
+      Boolean(
+        pairing &&
+          /^\d{6}$/.test(String(pairing.pin)) &&
+          pairing.ttlMs === 5 * 60 * 1000 &&
+          (pairing.expiresAtMs ?? 0) > Date.now(),
+      ),
+    ]);
 
     const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
     console.log(
