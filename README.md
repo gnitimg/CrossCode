@@ -9,7 +9,7 @@
 [![pnpm](https://img.shields.io/badge/pnpm-Monorepo-F69220?logo=pnpm&logoColor=white)](https://pnpm.io/)
 [![React 19](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![MCP](https://img.shields.io/badge/MCP-Unified_Hub-8B5CF6)](https://modelcontextprotocol.io/)
-[![Tests](https://img.shields.io/badge/Tests-146_Passed-10B981)](#测试与质量保障)
+[![Tests](https://img.shields.io/badge/Tests-149_Passed-10B981)](#测试与质量保障)
 
 </div>
 
@@ -148,23 +148,28 @@ pnpm --filter @crosscode/web dev
 
 在代码中启动本地守护进程网关与 Skills 虚拟化中心：
 ```typescript
-import { createGateway } from '@crosscode/daemon';
-import { SkillVirtualizer } from '@crosscode/mcp-hub';
+import { createDaemonSessionManager, createGateway } from '@crosscode/daemon';
+import { SkillVirtualizer, createUnifiedMcpServer } from '@crosscode/mcp-hub';
 
 // 1. Skills 虚拟化：扫描中心技能库并零拷贝同步到各 App（Windows Junction，免管理员权限）
 const skills = new SkillVirtualizer(); // 默认 SSOT 为 ~\.agents\skills，目录均可注入
 await skills.scan();
 await skills.syncToApps();
 
-// 2. 启动 Unified MCP Server（16 个共享工具，stdio 传输；可用 registerIntoAppConfigs
-//    幂等注册进各家编程 App 的 MCP 配置。CLI 直启：
-//    node packages/mcp-hub/dist/index.js --mcp-stdio）
+// 2. 启动 Unified MCP Server（18 个共享工具，含内置/外置浏览器与 Computer Use 审批决议出口）
+const mcpServer = createUnifiedMcpServer({ skills });
 
-// 3. 启动本地 REST + WebSocket 统合网关
+// 3. 创建 Daemon 组合根 SessionManager（默认开启 enforceApprovalGate 阻塞审批，并桥接 MCP CC-TOOL-4002）
+const sessionManager = createDaemonSessionManager({
+  computerUse: mcpServer.computerUse,
+});
+
+// 4. 启动本地 REST + WebSocket 统合网关
 const gateway = createGateway({
   jwtSecret: process.env.CROSSCODE_JWT_SECRET!, // HS256 签名密钥（必填）
   pin: '884866',                                // 远程设备 6 位配对码；省略则每次启动随机生成
   scanOptions: { workspaceRoots: ['F:\\cs'] },  // 项目扫描范围（可选，默认全量默认目录）
+  sessionManager,
 });
 await gateway.app.listen({ port: 4399, host: '127.0.0.1' });
 ```
@@ -192,7 +197,7 @@ CrossCode Daemon 原生提供结构化 REST 与双向 WebSocket 接口，后期�
 
 ## 🧪 测试与质量保障
 
-本项目严格遵循 **TDD（测试驱动开发）** 构建，内置 11 个测试套件共 **146 项自动化测试**：
+本项目严格遵循 **TDD（测试驱动开发）** 构建，内置 11 个测试套件共 **149 项自动化测试**：
 - `@crosscode/shared`: 核心契约校验 + 11 类 `CC-XXXX` 跨应用报错正则与自愈策略全覆盖测试。
 - `@crosscode/mcp-hub`: Skills 目录虚拟化（Windows Junction + Frontmatter 转译）测试 + 内置浏览器、外置浏览器桥接、Win32 Computer Use 与安全围栏测试。
 - `@crosscode/daemon`: `.agent` 工作区幂等初始化与 Git 忽略测试 + 跨 6 大编程 App 项目扫描去重测试 + `CrossCodeNativeHarness` 与外部 Adapter 故障自动漂移接力测试 + JWT 配对与 Git Diff 网关集成测试。
