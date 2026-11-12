@@ -1,2 +1,8 @@
 packages:
   - "packages/*"
+
+# Electron and esbuild ship platform binaries via postinstall; pnpm 10 blocks
+# build scripts by default, so allow these explicitly.
+onlyBuiltDependencies:
+  - electron
+  - esbuild

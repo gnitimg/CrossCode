@@ -7,7 +7,9 @@
     "build": "pnpm -r build",
     "dev": "pnpm --parallel -r dev",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "desktop": "pnpm --filter @crosscode/desktop dev",
+    "desktop:dist": "pnpm --filter @crosscode/web build && pnpm --filter @crosscode/desktop dist"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

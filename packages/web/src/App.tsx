@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Loader2, Terminal } from 'lucide-react';
 import { useWorkbenchStore } from './store/workbench';
 import { bootWorkbench, submitPairing, watchProjectSwitch } from './lib/bootstrap';
+import { getDesktopBridge } from './lib/desktop';
 import { TopSwitchboardBar } from './components/TopSwitchboardBar';
 import { SidebarProjectMatrix } from './components/SidebarProjectMatrix';
 import { UnifiedAgentStream } from './components/UnifiedAgentStream';
@@ -28,6 +29,22 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // Desktop shell: the global shortcut and approval notifications drive the UI.
+  useEffect(() => {
+    const bridge = getDesktopBridge();
+    if (!bridge) return;
+    const offPalette = bridge.onTogglePalette(() => useWorkbenchStore.getState().openPalette());
+    const offApprovals = bridge.onFocusApprovals(() => {
+      const state = useWorkbenchStore.getState();
+      state.setMobilePane('stream');
+      state.setInspectorTab('changes');
+    });
+    return () => {
+      offPalette();
+      offApprovals();
+    };
   }, []);
 
   if (mode === 'boot') return <BootScreen />;

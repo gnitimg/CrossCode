@@ -1,6 +1,6 @@
 # @crosscode/web — CrossCode 前端工作台
 
-博采众长的高颜值响应式 Agent 工作台（Task 8）。React 19 + Vite 6 + Tailwind CSS v4 + Zustand 5 + lucide-react，深度对接 daemon 网关（`http-ws-gateway.ts`）的 REST 与 WebSocket 协议。
+React 19 + Vite 6 + Tailwind CSS v4 + Zustand 5 + lucide-react，对接 daemon 网关（`http-ws-gateway.ts`）的 REST 与 WebSocket 协议。同一份构建产物既用于浏览器访问，也由桌面端（`@crosscode/desktop`）直接托管。
 
 ## 快速开始
 
@@ -36,10 +36,11 @@ daemon 未启动时自动静默降级（REST 探测失败或 WS 重连耗尽）�
 
 ## 布局与设计语言
 
-- 深邃曜石黑：主背景 `#090A0F`、面板 `#11131C`、1px 微高光边框 `rgba(255,255,255,0.07)`，精致圆角 + 内阴影；代码/日志等宽字体。
-- Harness 品牌呼吸灯：CrossCode 极光紫 `#8b5cf6`、Claude 琥珀橙 `#d97757`、OpenCode 冰川青 `#22d3ee`、Codex 翡翠绿 `#10b981`、DeepSeek 深海蓝 `#3b82f6`、Qoder 玫红 `#e11d48`、ZCode 日晖橙 `#f59e0b`。
-- 桌面三栏 IDE 布局（项目矩阵 / 统一事件流 / 三合一检视器），顶栏可分别收起；`Ctrl/Cmd+K` 命令面板；顶部自愈横幅按 `recoveryAction` 一键处置。
-- 移动端（<768px）：单栏 + 底部大拇指导航 + 抽屉式切换器（Harness/Provider/模式）。
+- 工业碳素黑：主背景 `#0A0A0C`、面板 `#111114`、1px 结构分割线 `rgba(255,255,255,0.065)`，4px 微圆角，无渐变光晕。
+- Harness 标识色：CrossCode `#e4e4e7`、Claude Code `#d97757`、OpenCode `#38bdf8`、Codex `#10b981`、DeepSeek `#60a5fa`、Qoder `#f43f5e`、ZCode `#f59e0b`。
+- 桌面三栏布局（工作区 / 事件流 / 检视器），顶栏可分别收起；`Ctrl/Cmd+K` 命令面板；顶部自愈横幅按 `recoveryAction` 一键处置。
+- 事件流采用纵向文档流（非聊天气泡）：用户指令左侧亮边标识，思考折叠为单行，工具调用与文件变更使用紧凑等宽行。
+- 移动端（<768px）：单栏 + 底部导航 + 抽屉式切换器（Harness/Provider/模式）。
 - 空态、加载骨架、断线重连横幅、离线演示徽标均有对应 UI。
 
 ## 目录结构

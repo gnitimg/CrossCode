@@ -16,6 +16,7 @@ import {
 import { ProjectScanner, type ProjectScanOptions } from '../scanner/project-scanner.js';
 import { updateActiveTask } from '../workspace/agent-workspace.js';
 import { ProviderSwitchboard } from '../providers/provider-switchboard.js';
+import { registerStaticFiles } from './static-files.js';
 
 /**
  * REST + WebSocket gateway for the local daemon ("守护服务网关").
@@ -195,6 +196,17 @@ export interface GatewayOptions {
   pendingApprovals?: PendingApprovalRegistry;
   /** Pairing brute-force protection (consecutive failure lockout). */
   pairRateLimit?: PairRateLimitOptions;
+  /**
+   * Directory of a built SPA to serve from this origin (desktop shell / browser
+   * clients loading the workbench directly from the daemon). Unmatched GET
+   * paths fall back to `index.html`.
+   */
+  staticDir?: string;
+  /**
+   * Fires when a `requiresApproval` tool call registers a pending approval —
+   * the desktop shell uses this to raise a native notification.
+   */
+  onApprovalRequest?: (record: PendingApprovalRecord) => void;
 }
 
 export interface GatewayHandle {
@@ -433,7 +445,19 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
     await fs.writeFile(skillsStorePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
   }
 
-  const app = fastify({ logger: false });
+  const app = fastify({
+    logger: false,
+    // The workbench speaks same-origin `/api/**`; strip the prefix before
+    // routing so the same route table serves both bare and prefixed callers.
+    rewriteUrl: (rawRequest) => {
+      const url = rawRequest.url ?? '/';
+      if (url === '/api' || url.startsWith('/api/')) return url.slice(4) || '/';
+      return url;
+    },
+  });
+  if (options.staticDir) {
+    registerStaticFiles(app, options.staticDir);
+  }
 
   // --- Pairing -------------------------------------------------------------
 
@@ -761,6 +785,11 @@ export function createGateway(options: GatewayOptions): GatewayHandle {
             }
           });
           send({ type: 'approval_request', ...record });
+          try {
+            options.onApprovalRequest?.(record);
+          } catch {
+            // notification hooks must never break the session stream
+          }
         }
       });
 

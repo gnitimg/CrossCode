@@ -14,9 +14,32 @@ import { clearStoredToken, getStoredToken, setStoredToken } from './token';
 let bootstrapped = false;
 let activeSocket: SessionSocket | null = null;
 
+/**
+ * Desktop shell / deep-link handoff: the Electron host self-pairs and passes a
+ * JWT as `?token=`. Consume it once, persist it, and strip it from the address
+ * bar so the token never lingers in history.
+ */
+function consumeUrlToken(): string | null {
+  try {
+    const location = globalThis.location;
+    if (!location) return null;
+    const url = new URL(location.href);
+    const token = url.searchParams.get('token');
+    if (!token) return null;
+    url.searchParams.delete('token');
+    globalThis.history?.replaceState(null, '', url.toString());
+    return token;
+  } catch {
+    return null;
+  }
+}
+
 export async function bootWorkbench(): Promise<void> {
   if (bootstrapped) return;
   bootstrapped = true;
+
+  const handoffToken = consumeUrlToken();
+  if (handoffToken) setStoredToken(handoffToken);
 
   const store = useWorkbenchStore.getState();
   if (import.meta.env.VITE_DEMO === '1') {

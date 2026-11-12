@@ -1,0 +1,29 @@
+{
+  "name": "@crosscode/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CrossCode desktop shell — tray-resident Electron host for the local daemon",
+  "author": "gnitimg",
+  "license": "MIT",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "pnpm build && electron .",
+    "start": "electron .",
+    "smoke": "electron . --smoke-test",
+    "smoke:window": "electron . --smoke-window",
+    "package": "pnpm build && node scripts/package.mjs",
+    "installer": "pnpm package && node scripts/installer.mjs",
+    "dist": "pnpm build && electron-builder --config electron-builder.yml",
+    "icons": "node scripts/make-icons.mjs"
+  },
+  "dependencies": {
+    "@crosscode/daemon": "workspace:*",
+    "@crosscode/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "electron": "^45.3.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2"
+  }
+}

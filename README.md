@@ -71,18 +71,19 @@
 | `CC-PROC-5001` | 进程与网络 | 底层 CLI 进程非零退出或异常崩溃 | `RESTART_PROCESS`（记录 `.agent/logs` 并从检查点拉起） |
 | `CC-PROC-5002` | 进程与网络 | 上游模型网络断连或代理超时 (`ECONNRESET`, `ETIMEDOUT`) | `RETRY_BACKOFF`（检测网络通道并自动重连） |
 
-### 5. 🖥️ 桌面端与移动端自适应工作台 (`@crosscode/web`)
+### 5. 🖥️ 桌面端与移动端自适应工作台 (`@crosscode/web` + `@crosscode/desktop`)
 - **OpenCode Desktop / Cursor 级三栏布局**：左侧项目与 Agent 矩阵 + 中间统一流式推理与工具时间线 + 右侧三合一检视器（**Git Diff 审查合入/回滚**、**内置浏览器/Computer Use 实时远程画面点按**、**`.agent` 记忆脑图**）。
 - **Cherry Studio 风格顶部复合切换栏**：一键切换当前项目的执行 Harness、Provider 渠道与 `Plan / Build / Orchestrate` 模式，带实时延迟与配额状态灯。
 - **Cline / Roo Code 风格透明工具审批卡**：折叠展示思考链与工具入参/出参，高危操作支持远程一键 `Approve / Reject`。
 - **Linear / Raycast 风格 `Ctrl/Cmd + K` 命令面板**：全键盘极速切换项目、切换底层 Agent、触发上下文压缩或直接发送指令。
 - **移动端与微信小程序就绪**：支持 6 位动态 PIN 码设备配对换取 JWT，手机竖屏访问自动切换为底部大拇指导航栏与抽屉式极速遥控视图。
+- **Electron 桌面端**：内置 daemon 与工作台，无需预装 Node、无需手动开终端；托盘常驻、单实例锁、`Alt+Shift+C` 全局唤起命令面板、`CC-TOOL-4002` 系统原生通知（点击直达审批），可打包为 NSIS 安装包。
 
 ---
 
 ## 🏗️ 仓库目录结构 (Monorepo)
 
-本项目基于 `pnpm workspaces` 构建，包含 4 个核心子包：
+本项目基于 `pnpm workspaces` 构建，包含 5 个核心子包：
 
 ```text
 CrossCode/
@@ -104,6 +105,9 @@ CrossCode/
 │   │   └── src/server/http-ws-gateway.ts
 │   └── web/                      # @crosscode/web: React 19 + Tailwind v4 响应式桌面/移动端远程工作台
 │       └── src/components/
+│   └── desktop/                  # @crosscode/desktop: Electron 桌面壳（托盘常驻、内置 daemon、原生审批通知）
+│       ├── src/main.ts
+│       └── scripts/package.mjs
 ├── .gitignore                    # 默认全局忽略 .agent/ 中间目录，防止污染 Git 历史
 ├── package.json
 ├── pnpm-workspace.yaml
@@ -144,6 +148,18 @@ pnpm test
 启动前端工作台开发服务器：
 ```bash
 pnpm --filter @crosscode/web dev
+```
+
+启动桌面端（Electron，内置 daemon）：
+```bash
+pnpm --filter @crosscode/web build   # 工作台产物由 daemon 直接托管
+pnpm desktop                         # 构建主进程并启动
+```
+
+桌面端关窗即隐藏到托盘，`Alt+Shift+C` 全局唤起命令面板；打包为可安装应用：
+```bash
+pnpm desktop:dist                    # → packages/desktop/release/CrossCode/CrossCode.exe
+pnpm --filter @crosscode/desktop installer   # → release/CrossCode-<version>-setup.exe
 ```
 
 在代码中启动本地守护进程网关与 Skills 虚拟化中心：

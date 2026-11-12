@@ -18,6 +18,10 @@ build/
 *.pid
 *.log
 
+# Build artifacts from the desktop shell
+packages/desktop/release/
+.cache/
+
 # Environment variables & local secrets
 .env
 .env.*

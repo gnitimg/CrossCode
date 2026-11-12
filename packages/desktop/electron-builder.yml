@@ -1,0 +1,48 @@
+appId: dev.crosscode.desktop
+productName: CrossCode
+copyright: Copyright © 2026 gnitimg
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - dist/**
+  - build/**
+  - package.json
+
+# The workbench build is copied as a plain resource so the daemon can serve it
+# from disk (no asar path quirks) and so users can hot-patch the UI.
+extraResources:
+  - from: ../web/dist
+    to: web
+
+asar: true
+npmRebuild: false
+buildDependenciesFromSource: false
+
+# Reuse the already-extracted Electron runtime (installed under devDependencies)
+# instead of re-extracting the release zip; on Windows the re-extract step can
+# fail with EBUSY when antivirus/indexers hold `default_app.asar`.
+electronDist: node_modules/electron/dist
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: CrossCode-${version}-setup.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+linux:
+  target: [AppImage]
+  category: Development
+
+mac:
+  target: [dmg]
+  category: public.app-category.developer-tools
